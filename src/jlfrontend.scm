@@ -42,12 +42,15 @@
 ;; this is overwritten when we run in actual julia
 (define (defined-julia-global v) #f)
 
+(define (some-gensym? x)
+  (or (gensym? x) (memq x *gensyms*)))
+
 ;; find variables that should be forced to be global in a toplevel expr
 (define (toplevel-expr-globals e)
   (delete-duplicates
    (append
     ;; vars assigned at the outer level
-    (filter (lambda (x) (not (gensym? x))) (find-assigned-vars e '()))
+    (filter (lambda (x) (not (some-gensym? x))) (find-assigned-vars e '()))
     ;; vars assigned anywhere, if they have been defined as global
     (filter defined-julia-global (find-possible-globals e)))))
 
@@ -59,7 +62,7 @@
 	     ;; special top-level expressions left alone
 	     (and (pair? e) (or (eq? (car e) 'line) (eq? (car e) 'module))))
 	 e)
-	((and (pair? e) (memq (car e) '(import importall export)))
+	((and (pair? e) (memq (car e) '(import importall using export)))
 	 e)
 	((and (pair? e) (eq? (car e) 'global) (every symbol? (cdr e)))
 	 e)
@@ -127,9 +130,7 @@
   (parser-wrap (lambda ()
 		 (let* ((inp  (make-token-stream (open-input-string s)))
 			(expr (julia-parse inp)))
-		   (if (not (eof-object? (julia-parse inp)))
-		       (error "extra input after end of expression")
-		       (expand-toplevel-expr expr))))))
+		   (expand-toplevel-expr expr)))))
 
 ;; parse file-in-a-string
 (define (jl-parse-string-stream str)
@@ -157,18 +158,19 @@
 
 (define (jl-parser-next)
   (skip-ws-and-comments (ts:port current-token-stream))
-  (let ((ln (input-port-line (ts:port current-token-stream))))
-    (let ((e (parser-wrap (lambda ()
-			    (julia-parse current-token-stream)))))
-      (if (eof-object? e)
-	  #f
-	  (cons ln
-		(parser-wrap
-		 (lambda ()
-		   (if (and (pair? e) (or (eq? (car e) 'error)
-					  (eq? (car e) 'continue)))
-		       e
-		       (expand-toplevel-expr e)))))))))
+  (let ((e (parser-wrap (lambda ()
+			  (julia-parse current-token-stream)))))
+    (if (eof-object? e)
+	#f
+	(cons (+ (input-port-line (ts:port current-token-stream))
+		 (if (eqv? (peek-token current-token-stream) #\newline)
+		     -1 0))
+	      (parser-wrap
+	       (lambda ()
+		 (if (and (pair? e) (or (eq? (car e) 'error)
+					(eq? (car e) 'continue)))
+		     e
+		     (expand-toplevel-expr e))))))))
 
 ; expand a piece of raw surface syntax to an executable thunk
 (define (jl-expand-to-thunk expr)

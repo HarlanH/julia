@@ -158,18 +158,25 @@ static void jl_serialize_module(ios_t *s, jl_module_t *m)
         if (table[i] != HT_NOTFOUND &&
             !(table[i-1] == jhsym && m == jl_core_module)) {
             jl_binding_t *b = (jl_binding_t*)table[i];
-            jl_serialize_value(s, b->name);
-            jl_serialize_value(s, b->value);
-            jl_serialize_value(s, b->type);
-            jl_serialize_value(s, b->owner);
-            write_int8(s, b->constp);
-            write_int8(s, b->exportp);
+            if (!(b->owner != m && m == jl_main_module)) {
+                jl_serialize_value(s, b->name);
+                jl_serialize_value(s, b->value);
+                jl_serialize_value(s, b->type);
+                jl_serialize_value(s, b->owner);
+                write_int8(s, (b->constp<<2) | (b->exportp<<1) | (b->imported));
+            }
         }
     }
     jl_serialize_value(s, NULL);
-    write_int32(s, m->imports.len);
-    for(i=0; i < m->imports.len; i++) {
-        jl_serialize_value(s, (jl_value_t*)m->imports.items[i]);
+    if (m == jl_main_module) {
+        write_int32(s, 1);
+        jl_serialize_value(s, (jl_value_t*)jl_core_module);
+    }
+    else {
+        write_int32(s, m->usings.len);
+        for(i=0; i < m->usings.len; i++) {
+            jl_serialize_value(s, (jl_value_t*)m->usings.items[i]);
+        }
     }
 }
 
@@ -604,7 +611,7 @@ static jl_value_t *jl_deserialize_value(ios_t *s)
         li->sparams = (jl_tuple_t*)jl_deserialize_value(s);
         li->tfunc = jl_deserialize_value(s);
         li->name = (jl_sym_t*)jl_deserialize_value(s);
-        li->specTypes = jl_deserialize_value(s);
+        li->specTypes = (jl_tuple_t*)jl_deserialize_value(s);
         li->specializations = (jl_array_t*)jl_deserialize_value(s);
         li->inferred = read_int8(s);
         li->file = jl_deserialize_value(s);
@@ -614,6 +621,7 @@ static jl_value_t *jl_deserialize_value(ios_t *s)
         li->fptr = &jl_trampoline;
         li->roots = NULL;
         li->functionObject = NULL;
+        li->cFunctionObject = NULL;
         li->inInference = 0;
         li->inCompile = 0;
         li->unspecialized = NULL;
@@ -624,7 +632,7 @@ static jl_value_t *jl_deserialize_value(ios_t *s)
         jl_module_t *m = jl_new_module(mname);
         if (usetable)
             ptrhash_put(&backref_table, (void*)(ptrint_t)pos, m);
-        m->parent = jl_deserialize_value(s);
+        m->parent = (jl_module_t*)jl_deserialize_value(s);
         while (1) {
             jl_value_t *name = jl_deserialize_value(s);
             if (name == NULL)
@@ -633,12 +641,14 @@ static jl_value_t *jl_deserialize_value(ios_t *s)
             b->value = jl_deserialize_value(s);
             b->type = (jl_type_t*)jl_deserialize_value(s);
             b->owner = (jl_module_t*)jl_deserialize_value(s);
-            b->constp = read_int8(s);
-            b->exportp = read_int8(s);
+            int8_t flags = read_int8(s);
+            b->constp = (flags>>2) & 1;
+            b->exportp = (flags>>1) & 1;
+            b->imported = (flags) & 1;
         }
         size_t ni = read_int32(s);
         for(size_t i=0; i < ni; i++) {
-            arraylist_push(&m->imports, jl_deserialize_value(s));
+            arraylist_push(&m->usings, jl_deserialize_value(s));
         }
         return (jl_value_t*)m;
     }
@@ -713,7 +723,7 @@ static jl_value_t *jl_deserialize_value(ios_t *s)
 // --- entry points ---
 
 DLLEXPORT
-void jl_save_system_image(char *fname, char *startscriptname)
+void jl_save_system_image(char *fname)
 {
     jl_gc_collect();
     jl_gc_collect();
@@ -724,11 +734,7 @@ void jl_save_system_image(char *fname, char *startscriptname)
     ios_file(&f, fname, 1, 1, 1, 1);
 
     // orphan old Base module if present
-    jl_base_module = (jl_module_t*)jl_get_global(jl_root_module, jl_symbol("Base"));
-
-    // remove Main module
-    jl_binding_t *b = jl_get_binding_wr(jl_root_module, jl_symbol("Main"));
-    b->value = NULL; b->constp = 0;
+    jl_base_module = (jl_module_t*)jl_get_global(jl_main_module, jl_symbol("Base"));
 
     // delete cached slow ASCIIString constructor if present
     jl_methtable_t *mt = jl_gf_mtable((jl_function_t*)jl_ascii_string_type);
@@ -745,17 +751,11 @@ void jl_save_system_image(char *fname, char *startscriptname)
 
     jl_serialize_value(&f, jl_array_type->env);
 
-    jl_serialize_value(&f, jl_root_module);
+    jl_serialize_value(&f, jl_main_module);
 
     write_int32(&f, jl_get_t_uid_ctr());
     write_int32(&f, jl_get_gs_ctr());
     htable_reset(&backref_table, 0);
-
-    ios_t ss;
-    ios_file(&ss, startscriptname, 1, 0, 0, 0);
-    ios_copyall(&f, &ss);
-    ios_close(&ss);
-    ios_putc(0, &f);
 
     ios_close(&f);
     if (en) jl_gc_enable();
@@ -784,10 +784,10 @@ void jl_restore_system_image(char *fname)
 
     jl_array_type->env = jl_deserialize_value(&f);
     
-    jl_root_module = (jl_module_t*)jl_deserialize_value(&f);
-    jl_core_module = (jl_module_t*)jl_get_global(jl_root_module,
+    jl_main_module = (jl_module_t*)jl_deserialize_value(&f);
+    jl_core_module = (jl_module_t*)jl_get_global(jl_main_module,
                                                  jl_symbol("Core"));
-    jl_base_module = (jl_module_t*)jl_get_global(jl_root_module,
+    jl_base_module = (jl_module_t*)jl_get_global(jl_main_module,
                                                  jl_symbol("Base"));
     jl_current_module = jl_base_module; // run start_image in Base
 
@@ -817,19 +817,12 @@ void jl_restore_system_image(char *fname)
     jl_set_gs_ctr(read_int32(&f));
     htable_reset(&backref_table, 0);
 
-    ios_t ss;
-    ios_mem(&ss, 0);
-    ios_copyuntil(&ss, &f, '\0');
     ios_close(&f);
     if (fpath != fname) free(fpath);
 
 #ifdef JL_GC_MARKSWEEP
     if (en) jl_gc_enable();
 #endif
-
-    // TODO: there is no exception handler here!
-    jl_load_file_string(ss.buf);
-    ios_close(&ss);
 }
 
 DLLEXPORT
@@ -1022,7 +1015,7 @@ void jl_init_serializer(void)
                       jl_f_no_function, jl_f_typeof, 
                       jl_f_subtype, jl_f_isa, 
                       jl_f_typeassert, jl_f_apply, 
-                      jl_f_top_eval, jl_f_isbound, 
+                      jl_f_top_eval, jl_f_isdefined, 
                       jl_f_tuple, jl_f_tupleref, 
                       jl_f_tuplelen, jl_f_get_field, 
                       jl_f_set_field, jl_f_field_type, 

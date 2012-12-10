@@ -137,7 +137,10 @@ end
 nextpow2(x::Unsigned) = one(x)<<((sizeof(x)<<3)-leading_zeros(x-1))
 nextpow2(x::Integer) = oftype(x,x < 0 ? -nextpow2(unsigned(-x)) : nextpow2(unsigned(x)))
 
-ispow2(x::Integer) = (x&(x-1))==0
+prevpow2(x::Unsigned) = (one(x)>>(x==0)) << ((sizeof(x)<<3)-leading_zeros(x)-1)
+prevpow2(x::Integer) = oftype(x,x < 0 ? -prevpow2(unsigned(-x)) : prevpow2(unsigned(x)))
+
+ispow2(x::Integer) = ((x<=0) == (x&(x-1)))
 
 # smallest integer n for which a^n >= x
 function nextpow(a, x)
@@ -152,7 +155,7 @@ end
 
 
 # decimal digits in an unsigned integer
-global const _jl_powers_of_ten = [
+const _jl_powers_of_ten = [
     0x0000000000000001, 0x000000000000000a, 0x0000000000000064, 0x00000000000003e8,
     0x0000000000002710, 0x00000000000186a0, 0x00000000000f4240, 0x0000000000989680,
     0x0000000005f5e100, 0x000000003b9aca00, 0x00000002540be400, 0x000000174876e800,
@@ -245,7 +248,7 @@ function dec(x::Unsigned, pad::Int, neg::Bool)
     a = Array(Uint8,i)
     while i > neg
         a[i] = '0'+rem(x,10)
-        x = div(x,10)
+        x = oftype(x,div(x,10))
         i -= 1
     end
     if neg; a[1]='-'; end
@@ -404,7 +407,7 @@ function factor{T<:Integer}(n::T)
     if n <= 0
         error("factor: number to be factored must be positive")
     end
-    h = Dict{T,Int}()
+    h = (T=>Int)[]
     if n == 1 return h end
     local p::T
     s = ifloor(sqrt(n))

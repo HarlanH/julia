@@ -20,6 +20,8 @@ static jl_array_t *_new_array(jl_type_t *atype,
     jl_array_t *a;
 
     for(i=0; i < ndims; i++) {
+        if ((long)dims[i] < 0)
+            jl_error("invalid Array dimension size");
         nel *= dims[i];
     }
     jl_type_t *el_type = (jl_type_t*)jl_tparam0(atype);
@@ -151,6 +153,8 @@ jl_array_t *jl_reshape_array(jl_type_t *atype, jl_array_t *data,
         size_t l=1;
         for(i=0; i < ndims; i++) {
             adims[i] = jl_unbox_long(jl_tupleref(dims, i));
+            if ((long)adims[i] < 0)
+                jl_error("invalid Array dimension size");
             l *= adims[i];
         }
         a->length = l;
@@ -364,26 +368,63 @@ jl_value_t *jl_arrayref(jl_array_t *a, size_t i)
     else {
         elt = ((jl_value_t**)a->data)[i];
         if (elt == NULL) {
-            jl_raise(jl_undefref_exception);
+            jl_throw(jl_undefref_exception);
         }
     }
     return elt;
 }
 
+static size_t array_nd_index(jl_array_t *a, jl_value_t **args, size_t nidxs,
+                             char *fname)
+{
+    size_t i=0;
+    if (nidxs == 1) {
+        if (!jl_is_long(args[0]))
+            jl_type_error(fname, (jl_value_t*)jl_long_type, args[0]);
+        i = jl_unbox_long(args[0])-1;
+    }
+    else {
+        size_t k, stride=1;
+        size_t nd = jl_array_ndims(a);
+        for(k=0; k < nidxs; k++) {
+            if (!jl_is_long(args[k]))
+                jl_type_error(fname, (jl_value_t*)jl_long_type, args[k]);
+            size_t ii = jl_unbox_long(args[k])-1;
+            i += ii * stride;
+            if (k < nidxs-1) {
+                size_t d = k>=nd ? 1 : jl_array_dim(a, k);
+                if (ii >= d)
+                    jl_throw(jl_bounds_exception);
+                stride = stride * d;
+            }
+        }
+    }
+    if (i >= a->length) {
+        jl_throw(jl_bounds_exception);
+    }
+    return i;
+}
+
 JL_CALLABLE(jl_f_arrayref)
 {
-    JL_NARGS(arrayref, 2, 2);
+    JL_NARGSV(arrayref, 2);
     JL_TYPECHK(arrayref, array, args[0]);
-    JL_TYPECHK(arrayref, long, args[1]);
     jl_array_t *a = (jl_array_t*)args[0];
-    size_t i = jl_unbox_long(args[1])-1;
-    if (i >= a->length) {
-        jl_errorf("ref array[%d]: index out of range", i+1);
-    }
+    size_t i = array_nd_index(a, &args[1], nargs-1, "arrayref");
     return jl_arrayref(a, i);
 }
 
-void jl_arrayset(jl_array_t *a, size_t i, jl_value_t *rhs)
+int jl_array_isdefined(jl_value_t **args, int nargs)
+{
+    assert(jl_is_array(args[0]));
+    jl_array_t *a = (jl_array_t*)args[0];
+    size_t i = array_nd_index(a, &args[1], nargs-1, "isdefined");
+    if (a->ptrarray)
+        return ((jl_value_t**)jl_array_data(a))[i] != NULL;
+    return 1;
+}
+
+void jl_arrayset(jl_array_t *a, jl_value_t *rhs, size_t i)
 {
     jl_value_t *el_type = jl_tparam0(jl_typeof(a));
     if (el_type != (jl_value_t*)jl_any_type) {
@@ -400,16 +441,21 @@ void jl_arrayset(jl_array_t *a, size_t i, jl_value_t *rhs)
 
 JL_CALLABLE(jl_f_arrayset)
 {
-    JL_NARGS(arrayset, 3, 3);
+    JL_NARGSV(arrayset, 3);
     JL_TYPECHK(arrayset, array, args[0]);
-    JL_TYPECHK(arrayset, long, args[1]);
-    jl_array_t *b = (jl_array_t*)args[0];
-    size_t i = jl_unbox_long(args[1])-1;
-    if (i >= b->length) {
-        jl_errorf("assign array[%d]: index out of range", i+1);
-    }
-    jl_arrayset(b, i, args[2]);
+    jl_array_t *a = (jl_array_t*)args[0];
+    size_t i = array_nd_index(a, &args[2], nargs-2, "arrayset");
+    jl_arrayset(a, args[1], i);
     return args[0];
+}
+
+void jl_arrayunset(jl_array_t *a, size_t i)
+{
+    if (i >= a->length)
+        jl_throw(jl_bounds_exception);
+    char *ptail = (char*)a->data + i*a->elsize;
+    if (a->ptrarray)
+        memset(ptail, 0, a->elsize);
 }
 
 static jl_mallocptr_t *array_new_buffer(jl_array_t *a, size_t newlen)
@@ -454,7 +500,7 @@ void jl_array_grow_end(jl_array_t *a, size_t inc)
 void jl_array_del_end(jl_array_t *a, size_t dec)
 {
     if (dec > a->length)
-        jl_error("array_del_end: index out of range");
+        jl_throw(jl_bounds_exception);
     char *ptail = (char*)a->data + (a->length-dec)*a->elsize;
     if (a->ptrarray)
         memset(ptail, 0, dec*a->elsize);
@@ -507,7 +553,7 @@ void jl_array_del_beg(jl_array_t *a, size_t dec)
     if (dec == 0)
         return;
     if (dec > a->length)
-        jl_error("array_del_beg: index out of range");
+        jl_throw(jl_bounds_exception);
     size_t es = a->elsize;
     size_t nb = dec*es;
     memset(a->data, 0, nb);

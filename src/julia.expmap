@@ -52,10 +52,12 @@
     jl_array_ptr;
     jl_arrayref;
     jl_arrayset;
+    jl_arrayunset;
     jl_array_to_string;
     jl_backtrace_type;
     jl_base_module;
     jl_boundp;
+    jl_defines_or_exports_p;
     jl_box_int32;
     jl_box_int64;
     jl_buf_mutex_lock;
@@ -72,7 +74,9 @@
     jl_current_task;
     jl_defer_signal;
     jl_dlsym;
+    jl_dlsym_e;
     jl_dump_function;
+    jl_function_ptr;
     jl_enable_color;
     jl_enable_inference;
     jl_enq_send_req;
@@ -87,6 +91,8 @@
     jl_exception_in_transit;
     jl_expand;
     jl_expr_type;
+    jl_ascii_string_type;
+    jl_utf8_string_type;
     jl_fd_clr;
     jl_fd_isset;
     jl_fd_set;
@@ -132,10 +138,13 @@
     jl_match_method;
     jl_module_export;
     jl_module_names;
+    jl_module_name;
+    jl_module_parent;
     jl_module_type;
     jl_nb_available;
     jl_new_array;
     jl_new_closure;
+    jl_new_gf_internal;
     jl_new_lambda_info;
     jl_new_struct_uninit;
     jl_new_struct;
@@ -160,7 +169,11 @@
     jl_ptr_to_array_1d;
     jl_readdir;
     jl_readuntil;
-    jl_register_toplevel_eh;
+    jl_throw;
+    jl_rethrow;
+    jl_rethrow_other;
+    jl_throw_with_superfluous_argument;
+    jl_get_backtrace;
     jl_reshape_array;
     jl_restore_system_image;
     jl_save_system_image;

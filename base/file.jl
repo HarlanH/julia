@@ -2,24 +2,24 @@
 # These do not examine the filesystem at all, they just work on strings
 @unix_only begin
     const os_separator = "/"
-    const os_separator_match = "/"
+    const os_separator_match = r"/+"
     const os_separator_match_chars = "/"
 end
 @windows_only begin
     const os_separator = "\\"
-    const os_separator_match = "[/\\]" # permit either slash type on Windows
+    const os_separator_match = r"[/\\]" # permit either slash type on Windows
     const os_separator_match_chars = "/\\" # to permit further concatenation
 end
 # Match only the final separator
-const last_separator = Regex(strcat(os_separator_match, "(?!.*", os_separator_match, ")"))
+const last_separator = Regex(strcat(os_separator_match.pattern, "(?!.*", os_separator_match.pattern, ")"))
 # Match the "." indicating a file extension. Must satisfy the
 # following requirements:
 #   - It's not followed by a later "." or os_separator
 #     (handles cases like myfile.txt.gz, or Mail.directory/cur)
 #   - It's not the first character in a string, nor is it preceded by
 #     an os_separator (handles cases like .bashrc or /home/fred/.juliarc)
-const extension_separator_match = Regex(strcat("(?<!^)(?<!",
-    os_separator_match, ")\\.(?!.*[", os_separator_match_chars, "\.])"))
+const extension_separator_match = Regex(strcat(L"(?<!^|[",
+    os_separator_match_chars, L"])\.[^.", os_separator_match_chars, L"]+$"))
 
 filesep() = os_separator
 
@@ -71,19 +71,13 @@ function file_path(components...)
     join(components, os_separator)
 end
 
-function fullfile(pathname::String, basename::String, ext::String)
-    if isempty(pathname)
-        return basename * ext
-    else
-        return pathname * os_separator * basename * ext
-    end
-end
+const fullfile = file_path
 
 # Test for an absolute path
 function isrooted(path::String)
     # Check whether it begins with the os_separator. On Windows, matches
     # \\servername syntax, so this is a relevant check for everyone
-    m = match(Regex(strcat("^", os_separator_match)), path)
+    m = match(Regex(strcat("^", os_separator_match.pattern)), path)
     if m != nothing
         return true
     end
@@ -148,15 +142,16 @@ function abs_path(fname::String)
     return join(comp, os_separator)
 end
 
-
 # Get the full, real path to a file, including dereferencing
 # symlinks.
-function real_path(fname::String)
+function realpath(fname::String)
     fname = tilde_expand(fname)
     sp = ccall(:realpath, Ptr{Uint8}, (Ptr{Uint8}, Ptr{Uint8}), fname, C_NULL)
-    system_error(:real_path, sp == C_NULL)
+    if sp == C_NULL
+        error("Cannot find ", fname)
+    end
     s = bytestring(sp)
-    ccall(:free, Void, (Ptr{Uint8},), sp)
+    c_free(sp)
     return s
 end
 
@@ -178,16 +173,24 @@ function cd(f::Function, dir::String)
     system_error("open", fd == -1)
     try
         cd(dir)
-        retval = f()
+        f()
+    finally
         system_error("fchdir", ccall(:fchdir,Int32,(Int32,),fd) != 0)
-        retval
-    catch err
-        system_error("fchdir", ccall(:fchdir,Int32,(Int32,),fd) != 0)
-        throw(err)
     end
 end
 cd(f::Function) = cd(f, ENV["HOME"])
 
+function mkdir(path::String, mode::Unsigned)
+    ret = ccall(:mkdir, Int32, (Ptr{Uint8},Uint32), bytestring(path), mode)
+    system_error(:mkdir, ret != 0)
+end
+mkdir(path::String, mode::Signed) = error("mkdir: mode must be an unsigned integer -- perhaps 0o", mode, "?")
+mkdir(path::String) = mkdir(path, 0o777)
+
+function rmdir(path::String)
+    ret = ccall(:rmdir, Int32, (Ptr{Uint8},), bytestring(path))
+    system_error(:rmdir, ret != 0)
+end
 
 # The following use Unix command line facilites
 
@@ -209,33 +212,76 @@ function file_create(filename::String)
 end
 
 function file_remove(filename::String)
-  run(`rm $filename`)
+    ret = ccall(:unlink, Int32, (Ptr{Uint8},), bytestring(filename))
+    system_error(:unlink, ret != 0)
 end
 
 function path_rename(old_pathname::String, new_pathname::String)
-  run(`mv $old_pathname $new_pathname`)
+    ret = ccall(:rename, Int32, (Ptr{Uint8},Ptr{Uint8}), bytestring(old_pathname), bytestring(new_pathname))
+    system_error(:rename, ret != 0)
 end
 
-function dir_create(directory_name::String)
-  run(`mkdir $directory_name`)
+# Obtain a temporary filename.
+const tempnam = (OS_NAME == :Windows) ? :_tempnam : :tempnam
+
+function tempname()
+  d = get(ENV, "TMPDIR", C_NULL) # tempnam ignores TMPDIR on darwin
+  p = ccall(tempnam, Ptr{Uint8}, (Ptr{Uint8},Ptr{Uint8}), d, "julia")
+  s = bytestring(p)
+  c_free(p)
+  s
 end
 
-function dir_remove(directory_name::String)
-  run(`rmdir $directory_name`)
+# Obtain a temporary directory's path.
+tempdir() = dirname(tempname())
+
+# Create and return the name of a temporary file along with an IOStream
+@unix_only function mktemp()
+  b = file_path(tempdir(), "tmpXXXXXX")
+  p = ccall(:mkstemp, Int32, (Ptr{Uint8}, ), b)
+  return (b, fdio(p, true))
 end
 
-function tempdir()
-  chomp(readall(`mktemp -d -t tmp`))
+@windows_only function mktemp()
+  error("not yet implemented")
 end
 
-function tempfile()
-  chomp(readall(`mktemp -t tmp`))
+# Create and return the name of a temporary directory
+@unix_only function mktempdir()
+  b = file_path(tempdir(), "tmpXXXXXX")
+  p = ccall(:mkdtemp, Ptr{Uint8}, (Ptr{Uint8}, ), b)
+  return bytestring(p)
 end
 
+@windows_only function mktempdir()
+  error("not yet implemented")
+end
+
+downloadcmd = nothing
+function download_file(url::String, filename::String)
+    global downloadcmd
+    if downloadcmd === nothing
+        for checkcmd in (:curl, :wget, :fetch)
+            if system("which $checkcmd > /dev/null") == 0
+                downloadcmd = checkcmd
+                break
+            end
+        end
+    end
+    if downloadcmd == :wget
+        run(`wget -O $filename $url`)
+    elseif downloadcmd == :curl
+        run(`curl -o $filename $url`)
+    elseif downloadcmd == :fetch
+        run(`fetch -f $filename $url`)
+    else
+        error("No download agent available; install curl, wget, or fetch.")
+    end
+    filename
+end
 function download_file(url::String)
-  filename = tempfile()
-  run(`curl -o $filename $url`)
-  filename
+  filename = tempname()
+  download_file(url, filename)
 end
 
 function readdir(path::String)

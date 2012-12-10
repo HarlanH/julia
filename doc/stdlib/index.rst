@@ -29,6 +29,10 @@ Extras
    cpp
    textwrap
    zlib
+   strpack
+   sound
+   argparse
+   gzip
 
 ****************
 Math & Numerical
@@ -39,14 +43,4 @@ Math & Numerical
 
    blas
    glpk
-   specfun
-
-************
-File Formats
-************
-
-.. toctree::
-   :maxdepth: 1
-
-   fitsio
 

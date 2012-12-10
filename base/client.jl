@@ -1,9 +1,6 @@
 ## client.jl - frontend handling command line options, environment setup,
 ##             and REPL
 
-@unix_only _jl_repl = _jl_lib
-@windows_only _jl_repl = ccall(:GetModuleHandleA,stdcall,Ptr{Void},(Ptr{Void},),C_NULL)
-
 const _jl_color_normal = "\033[0m"
 
 function _jl_answer_color()
@@ -45,20 +42,32 @@ function repl_show(io, v::ANY)
     end
 end
 
+function add_backtrace(e, bt)
+    if isa(e,LoadError)
+        if isa(e.error,LoadError)
+            add_backtrace(e.error,bt)
+        else
+            e.error = BackTrace(e.error, bt)
+            e
+        end
+    else
+        BackTrace(e, bt)
+    end
+end
+
 function _jl_eval_user_input(ast::ANY, show_value)
-    iserr, lasterr = false, ()
+    iserr, lasterr, bt = false, (), nothing
     while true
         try
-            ccall(:jl_register_toplevel_eh, Void, ())
             if _jl_have_color
                 print(_jl_color_normal)
             end
             if iserr
-                show(lasterr)
+                show(add_backtrace(lasterr,bt))
                 println()
                 iserr, lasterr = false, ()
             else
-                value = eval(ast)
+                value = eval(Main,ast)
                 global ans = value
                 if !is(value,nothing) && show_value
                     if _jl_have_color
@@ -74,6 +83,7 @@ function _jl_eval_user_input(ast::ANY, show_value)
             break
         catch err
             iserr, lasterr = true, err
+            bt = backtrace()
         end
     end
     println()
@@ -120,12 +130,20 @@ function parse_input_line(s::String)
     ccall(:jl_parse_input_line, Any, (Ptr{Uint8},), s)
 end
 
+# try to include() a file, ignoring if not found
+function try_include(f::String)
+    if is_file_readable(f)
+        include(f)
+    end
+end
+
 function process_options(args::Array{Any,1})
     global ARGS
     quiet = false
     repl = true
+    startup = true
     if has(ENV, "JL_POST_BOOT")
-        eval(parse_input_line(ENV["JL_POST_BOOT"]))
+        eval(Main,parse_input_line(ENV["JL_POST_BOOT"]))
     end
     i = 1
     while i <= length(args)
@@ -139,18 +157,18 @@ function process_options(args::Array{Any,1})
             repl = false
             i+=1
             ARGS = args[i+1:end]
-            eval(parse_input_line(args[i]))
+            eval(Main,parse_input_line(args[i]))
             break
         elseif args[i]=="-E"
             repl = false
             i+=1
             ARGS = args[i+1:end]
-            show(eval(parse_input_line(args[i])))
+            show(eval(Main,parse_input_line(args[i])))
             println()
             break
         elseif args[i]=="-P"
             i+=1
-            eval(parse_input_line(args[i]))
+            eval(Main,parse_input_line(args[i]))
         elseif args[i]=="-L"
             i+=1
             load(args[i])
@@ -167,19 +185,25 @@ function process_options(args::Array{Any,1})
             exit(0)
         elseif args[i]=="--no-history"
             # see repl-readline.c
+        elseif args[i] == "-f" || args[i] == "--no-startup"
+            startup = false
+        elseif args[i] == "-F"
+            # load juliarc now before processing any more options
+            try_include(strcat(ENV["HOME"],"/.juliarc.jl"))
+            startup = false
         elseif args[i][1]!='-'
             # program
             repl = false
             # remove julia's arguments
             ARGS = args[i+1:end]
-            load(args[i])
+            include(args[i])
             break
         else
             error("unknown option: ", args[i])
         end
         i += 1
     end
-    return (quiet,repl)
+    return (quiet,repl,startup)
 end
 
 const _jl_roottask = current_task()
@@ -188,6 +212,8 @@ const _jl_roottask_wi = WorkItem(_jl_roottask)
 _jl_is_interactive = false
 isinteractive() = (_jl_is_interactive::Bool)
 
+julia_pkgdir() = abs_path(get(ENV,"JULIA_PKGDIR",string(ENV["HOME"],"/.julia")))
+
 function _start()
     # set up standard streams
     global const stdout_stream = make_stdout_stream()
@@ -195,14 +221,13 @@ function _start()
     global const stderr_stream = make_stderr_stream()
     global OUTPUT_STREAM = stdout_stream
 
+    librandom_init()
+
     # set CPU core count
     global const CPU_CORES = ccall(:jl_cpu_cores, Int32, ())
 
-    _jl_librandom_init()
-
     atexit(()->flush(stdout_stream))
     try
-        ccall(:jl_register_toplevel_eh, Void, ())
         ccall(:jl_start_io_thread, Void, ())
         global const Workqueue = WorkItem[]
         global const Waiting = Dict(64)
@@ -218,19 +243,21 @@ function _start()
             global PGRP = ProcessGroup(0, {}, {})
         end
 
-        global const LOAD_PATH = String[
+        global const LOAD_PATH = ByteString[
             ".",
-            abs_path("$JULIA_HOME/../lib/julia"),
-            abs_path("$JULIA_HOME/../lib/julia/base"),
-            abs_path("$JULIA_HOME/../lib/julia/extras"),
-            abs_path("$JULIA_HOME/../lib/julia/ui"),
+            julia_pkgdir(),
+            abs_path("$JULIA_HOME/../share/julia"),
+            abs_path("$JULIA_HOME/../share/julia/base"),
+            abs_path("$JULIA_HOME/../share/julia/extras"),
+            abs_path("$JULIA_HOME/../share/julia/ui"),
         ]
 
-        (quiet,repl) = process_options(ARGS)
+        (quiet,repl,startup) = process_options(ARGS)
+
         if repl
-            # Load customized startup
-            try include(strcat(cwd(),"/startup.jl")) end
-            try include(strcat(ENV["HOME"],"/.juliarc.jl")) end
+            if startup
+                try_include(strcat(ENV["HOME"],"/.juliarc.jl"))
+            end
 
             global _jl_have_color = begins_with(get(ENV,"TERM",""),"xterm") ||
                                     success(`tput setaf 0`)
@@ -241,7 +268,7 @@ function _start()
             run_repl()
         end
     catch e
-        show(e)
+        show(add_backtrace(e,backtrace()))
         println()
         exit(1)
     end

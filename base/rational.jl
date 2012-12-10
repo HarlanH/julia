@@ -41,19 +41,29 @@ function convert{T<:Integer}(::Type{Rational{T}}, x::FloatingPoint, tol::Real)
     if isnan(x);       return zero(T)//zero(T); end
     if x < typemin(T); return -one(T)//zero(T); end
     if typemax(T) < x; return  one(T)//zero(T); end
+    tm = x < 0 ? typemin(T) : typemax(T)
+    z = x*tm
+    if z <= 0.5 return zero(T)//one(T) end
+    if z <= 1.0 return one(T)//tm end
     y = x
-    a = d = one(T)
-    b = c = zero(T)
+    a = d = 1
+    b = c = 0
     while true
-        f = convert(T,trunc(y)); y -= f
-        a, b, c, d = f*a+c, f*b+d, a, b
+        f = itrunc(y); y -= f
+        p, q = f*a+c, f*b+d
+        if p < typemin(T) || p > typemax(T) ||
+           q < typemin(T) || q > typemax(T)
+           break
+        end
+        a, b, c, d = p, q, a, b
         if y == 0 || abs(a/b-x) <= tol
-            return a//b
+            break
         end
         y = 1/y
     end
+    return convert(T,a)//convert(T,b)
 end
-convert{T<:Integer}(rt::Type{Rational{T}}, x::FloatingPoint) = convert(rt,x,0)
+convert{T<:Integer}(rt::Type{Rational{T}}, x::FloatingPoint) = convert(rt,x,eps(one(x)))
 convert(::Type{Bool}, x::Rational) = (x!=0)  # to resolve ambiguity
 convert{T<:Rational}(::Type{T}, x::Rational) = x
 convert{T<:Real}(::Type{T}, x::Rational) = convert(T, x.num/x.den)
@@ -149,3 +159,13 @@ for f in (:int8, :int16, :int32, :int64, :int128,
           :signed, :integer, :unsigned, :int, :uint)
     @eval ($f)(x::Rational) = ($f)(iround(x))
 end
+
+function ^(x::Rational, y::Integer)
+    if y < 0
+        Rational(x.den^-y, x.num^-y)
+    else
+        Rational(x.num^y, x.den^y)
+    end
+end
+
+^(x::Number, y::Rational) = x^(y.num/y.den)

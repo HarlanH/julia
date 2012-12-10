@@ -185,7 +185,15 @@ static void flatten_type_union(jl_tuple_t *types, jl_value_t **out, size_t *idx)
 
 static int union_elt_morespecific(const void *a, const void *b)
 {
-    return jl_args_morespecific(*(jl_value_t**)a, *(jl_value_t**)b) ? -1 : 1;
+    jl_value_t *va = *(jl_value_t**)a;
+    jl_value_t *vb = *(jl_value_t**)b;
+    if (jl_args_morespecific(va, vb))
+        return -1;
+    // impose a partially-arbitrary ordering on Union elements, to make it more
+    // likely that many Unions will be identical and can be merged.
+    // NOTE: we know !(a <: b) && !(b <: a), since otherwise one would have
+    // been eliminated from the Union.
+    return jl_object_id(va) < jl_object_id(vb) ? -1 : 1;
 }
 
 DLLEXPORT
@@ -221,6 +229,8 @@ jl_tuple_t *jl_compute_type_union(jl_tuple_t *types)
         }
     }
     assert(j == n-ndel);
+    // sort Union components by specificity, so "complex" type Unions work as
+    // long as there are no ambiguities (see e.g. issue #126).
     // TODO: maybe warn about ambiguities
     qsort(result->data, j, sizeof(jl_value_t*), union_elt_morespecific);
     JL_GC_POP();
@@ -2160,7 +2170,9 @@ static jl_value_t *type_match_(jl_value_t *child, jl_value_t *parent,
     int super = 0;
     while (tta != (jl_tag_type_t*)jl_any_type) {
         if (tta->name == ttb->name) {
-            if (super && morespecific)
+            // note: CompositeKind <: Type, but Type{T} <: CompositeKind
+            // for any specific T.
+            if (super && morespecific && tta->name != jl_type_type->name)
                 return jl_true;
             assert(jl_tuple_len(tta->parameters) == jl_tuple_len(ttb->parameters));
             for(i=0; i < jl_tuple_len(tta->parameters); i++) {
@@ -2274,6 +2286,11 @@ void jl_init_types(void)
                                   jl_typename_type, jl_type_type,
                                   jl_tuple_type);
     jl_tag_kind->fptr = jl_f_no_function;
+    jl_tag_kind->env = (jl_value_t*)jl_null;
+    jl_tag_kind->linfo = NULL;
+    jl_tag_kind->ctor_factory = NULL;
+    jl_tag_kind->instance = NULL;
+    jl_tag_kind->uid = jl_assign_type_uid();
 
     jl_struct_kind->name = jl_new_typename(jl_symbol("CompositeKind"));
     jl_struct_kind->name->primary = (jl_value_t*)jl_struct_kind;
@@ -2600,6 +2617,7 @@ void jl_init_types(void)
     module_sym = jl_symbol("module");
     export_sym = jl_symbol("export");
     import_sym = jl_symbol("import");
+    using_sym = jl_symbol("using");
     importall_sym = jl_symbol("importall");
     assign_sym = jl_symbol("=");
     null_sym = jl_symbol("null");

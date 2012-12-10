@@ -29,12 +29,15 @@ DLLEXPORT void jl_lisp_prompt(void)
 
 value_t fl_defined_julia_global(value_t *args, uint32_t nargs)
 {
+    // tells whether a var is defined in and *by* the current module
     argcount("defined-julia-global", nargs, 1);
     (void)tosymbol(args[0], "defined-julia-global");
     if (jl_current_module == NULL)
         return FL_F;
-    char *name = symbol_name(args[0]);
-    return jl_boundp(jl_current_module, jl_symbol(name)) ? FL_T : FL_F;
+    jl_sym_t *var = jl_symbol(symbol_name(args[0]));
+    jl_binding_t *b =
+        (jl_binding_t*)ptrhash_get(&jl_current_module->bindings, var);
+    return (b != HT_NOTFOUND && b->owner==jl_current_module) ? FL_T : FL_F;
 }
 
 value_t fl_invoke_julia_macro(value_t *args, uint32_t nargs)
@@ -50,8 +53,6 @@ value_t fl_invoke_julia_macro(value_t *args, uint32_t nargs)
     jl_value_t *result;
 
     JL_TRY {
-        jl_register_toplevel_eh();
-
         margs[0] = scm_to_julia(args[0]);
         f = (jl_function_t*)jl_toplevel_eval(margs[0]);
         result = jl_apply(f, &margs[1], nargs-1);
@@ -161,7 +162,16 @@ static jl_value_t *scm_to_julia(value_t e)
     int en = jl_gc_is_enabled();
     jl_gc_disable();
 #endif
-    jl_value_t *v = scm_to_julia_(e);
+    jl_value_t *v;
+    JL_TRY {
+        v = scm_to_julia_(e);
+    }
+    JL_CATCH {
+        // if expression cannot be converted, replace with error expr
+        jl_expr_t *ex = jl_exprn(error_sym, 1);
+        jl_cellset(ex->args, 0, jl_cstr_to_string("invalid AST"));
+        v = (jl_value_t*)ex;
+    }
 #ifdef JL_GC_MARKSWEEP
     if (en) jl_gc_enable();
 #endif
@@ -176,6 +186,8 @@ static jl_value_t *scm_to_julia_(value_t e)
             switch (nt) {
             case T_DOUBLE:
                 return (jl_value_t*)jl_box_float64(*(double*)cp_data((cprim_t*)ptr(e)));
+            case T_FLOAT:
+                return (jl_value_t*)jl_box_float32(*(float*)cp_data((cprim_t*)ptr(e)));
             case T_INT64:
                 return (jl_value_t*)jl_box_int64(*(int64_t*)cp_data((cprim_t*)ptr(e)));
             case T_UINT8:
@@ -238,7 +250,7 @@ static jl_value_t *scm_to_julia_(value_t e)
             /* tree node types:
                goto  gotoifnot  label  return
                lambda  call  =  quote
-               null  top  isbound  method
+               null  top  method
                body  file new
                line  enter  leave
             */
@@ -695,8 +707,17 @@ jl_value_t *jl_prepare_ast(jl_lambda_info_t *li, jl_tuple_t *sparams)
         ast = jl_uncompress_ast((jl_tuple_t*)ast);
     spenv = jl_tuple_tvars_to_symbols(sparams);
     ast = copy_ast(ast, sparams, 1);
-    eval_decl_types(jl_lam_vinfo((jl_expr_t*)ast), spenv);
-    eval_decl_types(jl_lam_capt((jl_expr_t*)ast), spenv);
+    jl_module_t *last_m = jl_current_module;
+    JL_TRY {
+        jl_current_module = li->module;
+        eval_decl_types(jl_lam_vinfo((jl_expr_t*)ast), spenv);
+        eval_decl_types(jl_lam_capt((jl_expr_t*)ast), spenv);
+    }
+    JL_CATCH {
+        jl_current_module = last_m;
+        jl_rethrow();
+    }
+    jl_current_module = last_m;
     JL_GC_POP();
     return ast;
 }

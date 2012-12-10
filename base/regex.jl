@@ -63,7 +63,7 @@ end
 
 type RegexMatch
     match::ByteString
-    captures::Tuple
+    captures::Vector{Union(Nothing,ByteString)}
     offset::Int
     offsets::Vector{Int}
 end
@@ -95,8 +95,9 @@ function match(re::Regex, str::ByteString, idx::Integer, opts::Integer)
     m, n = PCRE.exec(re.regex, re.extra, str, idx-1, opts, true)
     if isempty(m); return nothing; end
     mat = str[m[1]+1:m[2]]
-    cap = ntuple(n, i->(m[2i+1] < 0 ? nothing : str[m[2i+1]+1:m[2i+2]]))
-    off = map(i->m[2i+1]+1, [1:n])
+    cap = Union(Nothing,ByteString)[
+            m[2i+1] < 0 ? nothing : str[m[2i+1]+1:m[2i+2]] for i=1:n ]
+    off = [ m[2i+1]::Int32+1 for i=1:n ]
     RegexMatch(mat, cap, m[1]+1, off)
 end
 match(r::Regex, s::String, i::Integer, o::Integer) = match(r, bytestring(s), i, o)
@@ -106,7 +107,7 @@ match(r::Regex, s::String) = match(r, s, start(s))
 function search(str::ByteString, re::Regex, idx::Integer)
     len = length(str)
     if idx >= len+2
-        return idx == len+2 ? (0,0) : error("index out of range")
+        return idx == len+2 ? (0,0) : error(BoundsError)
     end
     opts = re.options & PCRE.EXECUTE_MASK
     m, n = PCRE.exec(re.regex, re.extra, str, idx-1, opts, true)

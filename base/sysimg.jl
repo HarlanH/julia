@@ -1,4 +1,7 @@
-module Base
+baremodule Base
+
+eval(x) = Core.eval(Base,x)
+eval(m,x) = Core.eval(m,x)
 
 include("export.jl")
 
@@ -53,9 +56,6 @@ include("promotion.jl")
 include("operators.jl")
 include("pointer.jl")
 
-_jl_lib = ccall(:jl_load_dynamic_library,Ptr{Void},(Ptr{None},),C_NULL)
-_jl_libfdm = dlopen("libfdm")
-
 include("float.jl")
 include("reduce.jl")
 include("complex.jl")
@@ -65,11 +65,13 @@ include("rational.jl")
 include("abstractarray.jl")
 include("subarray.jl")
 include("array.jl")
+include("bitarray.jl")
 include("intset.jl")
 include("dict.jl")
 include("set.jl")
 
 # compiler
+import Core.Undef  # used internally by compiler
 include("inference.jl")
 
 # I/O, strings & printing
@@ -81,7 +83,9 @@ include("string.jl")
 include("regex.jl")
 include("show.jl")
 include("grisu.jl")
+import Grisu.print_shortest
 include("printf.jl")
+using Printf
 
 # concurrency and parallelism
 include("iterator.jl")
@@ -105,16 +109,21 @@ include("client.jl")
 include("intfuncs.jl")
 include("floatfuncs.jl")
 include("math.jl")
-include("math_libm.jl")
+using Math
+
+# random number generation and statistics
+include("statistics.jl")
+include("librandom.jl")
+include("rng.jl")
+using RNG
+
+# Combinatorics
 include("sort.jl")
 include("combinatorics.jl")
-include("statistics.jl")
-
-# random number generation
-include("random.jl")
 
 # distributed arrays and memory-mapped arrays
-include("darray.jl")
+#include("darray.jl")
+include("darray2.jl")
 include("mmap.jl")
 
 # utilities - version, timing, help, edit
@@ -123,23 +132,21 @@ include("util.jl")
 include("datafmt.jl")
 include("deepcopy.jl")
 
-## Load optional external libraries
-
-include("build_h.jl")
-
 # linear algebra
+include("build_h.jl")
 include("blas.jl")
+include("lapack.jl")
+include("matmul.jl")
+include("sparse.jl")
 include("linalg.jl")
 include("linalg_dense.jl")
-include("lapack.jl")
-include("linalg_lapack.jl")
-include("linalg_specialized.jl")
-include("factorizations.jl")
+include("linalg_bitarray.jl")
+include("linalg_sparse.jl")
 
 # signal processing
 include("fftw.jl")
-include("DSP.jl")
-import Base.DSP.*
+include("dsp.jl")
+using DSP
 
 # prime method cache with some things we know we'll need right after startup
 compile_hint(cwd, ())
@@ -173,10 +180,10 @@ compile_hint(cmp, (Int32, Int32))
 compile_hint(min, (Int32, Int32))
 compile_hint(==, (ASCIIString, ASCIIString))
 compile_hint(arg_gen, (ASCIIString,))
-compile_hint(_jl_librandom_init, ())
-compile_hint(srand, (ASCIIString, Int))
+compile_hint(RNG.librandom_init, ())
+compile_hint(RNG.srand, (ASCIIString, Int))
 compile_hint(open, (ASCIIString, Bool, Bool, Bool, Bool))
-compile_hint(srand, (Uint64,))
+compile_hint(RNG.srand, (Uint64,))
 compile_hint(done, (IntSet, Int64))
 compile_hint(next, (IntSet, Int64))
 compile_hint(ht_keyindex, (Dict{Any,Any}, Int32))
@@ -225,12 +232,13 @@ compile_hint(static_convert, (Nothing, Nothing))
 compile_hint(assign, (Array{Any,1}, WeakRef, Int))
 compile_hint(assign, (Dict{Any,Any}, WorkItem, (Int,Int)))
 compile_hint(isequal, ((Int,Int),(Int,Int)))
+compile_hint(isequal, (Int,Int))
 compile_hint(RemoteRef, (Int, Int, Int))
 compile_hint(_jl_eval_user_input, (Expr, Bool))
 compile_hint(print, (Float64,))
 compile_hint(a2t, (Array{Any,1},))
 compile_hint(flush, (IOStream,))
-compile_hint(ref, (Type{String}, ASCIIString, ASCIIString, ASCIIString))
+compile_hint(ref, (Type{String}, ASCIIString, ASCIIString, ASCIIString, ASCIIString, ASCIIString))
 compile_hint(int, (Int,))
 compile_hint(uint, (Uint,))
 compile_hint(_atexit, ())
@@ -252,6 +260,12 @@ compile_hint(CallStack, (Expr, Module, (Nothing,), EmptyCallStack))
 compile_hint(convert, (Type{Module}, Module))
 compile_hint(effect_free, (Expr,))
 compile_hint(effect_free, (TopNode,))
+compile_hint(abs_path, (ASCIIString,))
+compile_hint(isrooted, (ASCIIString,))
+compile_hint(split, (ASCIIString,))
+compile_hint(split, (ASCIIString, ASCIIString, Int, Bool))
+compile_hint(print_joined, (IOStream, Array{String,1}, ASCIIString))
+compile_hint(begins_with, (ASCIIString, ASCIIString))
 
 # invoke type inference, running the existing inference code on the new
 # inference code to cache an optimized version of it.
@@ -261,10 +275,12 @@ begin
     typeinf_ext(minf[1][3], atypes, (), minf[1][3])
 end
 
-end # module Base
+end # baremodule Base
 
-import Base.*
+using Base
 
+let JL_PRIVATE_LIBDIR = getenv("JL_PRIVATE_LIBDIR")
 # create system image file
-ccall(:jl_save_system_image, Void, (Ptr{Uint8},Ptr{Uint8}),
-      "$JULIA_HOME/../lib/julia/sys.ji", "start_image.jl")
+ccall(:jl_save_system_image, Void, (Ptr{Uint8},),
+      "$JULIA_HOME/../$JL_PRIVATE_LIBDIR/sys.ji")
+end

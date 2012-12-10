@@ -30,6 +30,8 @@ strides{T}(a::Array{T,1}) = (1,)
 strides{T}(a::Array{T,2}) = (1, size(a,1))
 strides{T}(a::Array{T,3}) = (1, size(a,1), size(a,1)*size(a,2))
 
+isassigned(a::Array, i::Int...) = isdefined(a, i...)
+
 ## copy ##
 
 function copy_to{T}(dest::Array{T}, dsto, src::Array{T}, so, N)
@@ -45,9 +47,7 @@ function copy_to_unsafe{T}(dest::Array{T}, dsto, src::Array{T}, so, N)
               pointer(dest, dsto), pointer(src, so), N*sizeof(T))
     else
         for i=0:N-1
-            # NOTE: this works around the performance problem caused by all
-            # the doubled definitions of assign()
-            arrayset(dest, i+dsto, src[i+so])
+            arrayset(dest, src[i+so], i+dsto)
         end
     end
     return dest
@@ -185,25 +185,23 @@ zeros(args...)               = fill!(Array(Float64, args...), float64(0))
 ones{T}(::Type{T}, args...) = fill!(Array(T, args...), one(T))
 ones(args...)               = fill!(Array(Float64, args...), float64(1))
 
-trues(args...)  = fill(true, args...)
-falses(args...) = fill(false, args...)
-
-eye(n::Int) = eye(n, n)
-function eye(m::Int, n::Int)
-    a = zeros(m,n)
+function eye(T::Type, m::Int, n::Int)
+    a = zeros(T,m,n)
     for i = 1:min(m,n)
-        a[i,i] = 1
+        a[i,i] = one(T)
     end
     return a
 end
+eye(m::Int, n::Int) = eye(Float64, m, n)
+eye(T::Type, n::Int) = eye(T, n, n)
+eye(n::Int) = eye(Float64, n)
+eye{T}(x::StridedMatrix{T}) = eye(T, size(x, 1), size(x, 2))
 function one{T}(x::StridedMatrix{T})
-    m, n = size(x)
-    a = zeros(T,size(x))
-    for i = 1:min(m,n)
-        a[i,i] = 1
-    end
-    return a
+    m,n = size(x)
+    if m != n; error("Multiplicative identity only defined for square matrices!"); end;
+    eye(T, m)
 end
+
 
 function linspace(start::Real, stop::Real, n::Integer)
     (start, stop) = promote(start, stop)
@@ -303,32 +301,21 @@ end
 
 ## Indexing: ref ##
 
-ref(a::Array, i::Int) = arrayref(a,i)
-ref(a::Array, i::Integer) = arrayref(a,int(i))
-ref{T}(a::Array{T,0}) = arrayref(a,1)
-ref{T}(a::Array{T,1}, i::Int) = arrayref(a,i)
-ref{T}(a::Array{T,1}, i::Integer) = arrayref(a,int(i))
-ref(a::Array{Any,1}, i::Int) = arrayref(a,i)
-ref(a::Array{Any,1}, i::Integer) = arrayref(a,int(i))
+ref(a::Array) = arrayref(a,1)
 
-# @Jeff: begin fixme issue #996
-ref(A::Array, i0::Integer, i1::Integer) = A[i0 + size(A,1)*(i1-1)]
+ref(A::Array, i0::Integer) = arrayref(A,int(i0))
+ref(A::Array, i0::Integer, i1::Integer) = arrayref(A,int(i0),int(i1))
 ref(A::Array, i0::Integer, i1::Integer, i2::Integer) =
-    A[i0 + size(A,1)*((i1-1) + size(A,2)*(i2-1))]
+    arrayref(A,int(i0),int(i1),int(i2))
 ref(A::Array, i0::Integer, i1::Integer, i2::Integer, i3::Integer) =
-    A[i0 + size(A,1)*((i1-1) + size(A,2)*((i2-1) + size(A,3)*(i3-1)))]
+    arrayref(A,int(i0),int(i1),int(i2),int(i3))
+ref(A::Array, i0::Integer, i1::Integer, i2::Integer, i3::Integer,  i4::Integer) =
+    arrayref(A,int(i0),int(i1),int(i2),int(i3),int(i4))
+ref(A::Array, i0::Integer, i1::Integer, i2::Integer, i3::Integer,  i4::Integer, i5::Integer) =
+    arrayref(A,int(i0),int(i1),int(i2),int(i3),int(i4),int(i5))
 
-function ref(A::Array, I::Integer...)
-    ndims = length(I)
-    index = I[1]
-    stride = 1
-    for k=2:ndims
-        stride = stride * size(A, k-1)
-        index += (I[k]-1) * stride
-    end
-    return A[index]
-end
-# end fixme issue #996
+ref(A::Array, i0::Integer, i1::Integer, i2::Integer, i3::Integer,  i4::Integer, i5::Integer, I::Int...) =
+    arrayref(A,int(i0),int(i1),int(i2),int(i3),int(i4),int(i5),I...)
 
 # Fast copy using copy_to for Range1
 function ref(A::Array, I::Range1{Int})
@@ -447,31 +434,23 @@ ref{T<:Integer}(A::Matrix, I::AbstractVector{T}, J::AbstractVector{Bool}) = A[I,
 ref{T<:Integer}(A::Matrix, I::AbstractVector{Bool}, J::AbstractVector{T}) = A[find(I),J]
 
 ## Indexing: assign ##
-# Jeff: begin fixme #996
-assign(A::Array{Any}, x::ANY, i::Integer) = arrayset(A,int(i),x)
-assign{T}(A::Array{T}, x, i::Integer) = arrayset(A,int(i),convert(T, x))
-assign{T}(A::Array{T,0}, x) = arrayset(A,1,convert(T, x))
+assign{T}(A::Array{T,0}, x) = arrayset(A, convert(T,x), 1)
 
-assign(A::Array, x, i0::Integer, i1::Integer) =
-    assign(A, x, i0 + size(A,1)*(i1-1))
+assign(A::Array{Any}, x::ANY, i::Integer) = arrayset(A, x, int(i))
 
-assign(A::Array, x, i0::Integer, i1::Integer, i2::Integer) =
-    assign(A, x, i0 + size(A,1)*((i1-1) + size(A,2)*(i2-1)))
-
-assign(A::Array, x, i0::Integer, i1::Integer, i2::Integer, i3::Integer) =
-    assign(A, x, i0 + size(A,1)*((i1-1) + size(A,2)*((i2-1) + size(A,3)*(i3-1))))
-
-function assign(A::Array, x, I0::Integer, I::Integer...)
-    index = I0
-    stride = 1
-    for k=1:length(I)
-        stride = stride * size(A, k)
-        index += (I[k]-1) * stride
-    end
-    A[index] = x
-    return A
-end
-# end fixme 996
+assign{T}(A::Array{T}, x, i0::Integer) = arrayset(A, convert(T,x), int(i0))
+assign{T}(A::Array{T}, x, i0::Integer, i1::Integer) =
+    arrayset(A, convert(T,x), int(i0), int(i1))
+assign{T}(A::Array{T}, x, i0::Integer, i1::Integer, i2::Integer) =
+    arrayset(A, convert(T,x), int(i0), int(i1), int(i2))
+assign{T}(A::Array{T}, x, i0::Integer, i1::Integer, i2::Integer, i3::Integer) =
+    arrayset(A, convert(T,x), int(i0), int(i1), int(i2), int(i3))
+assign{T}(A::Array{T}, x, i0::Integer, i1::Integer, i2::Integer, i3::Integer, i4::Integer) =
+    arrayset(A, convert(T,x), int(i0), int(i1), int(i2), int(i3), int(i4))
+assign{T}(A::Array{T}, x, i0::Integer, i1::Integer, i2::Integer, i3::Integer, i4::Integer, i5::Integer) =
+    arrayset(A, convert(T,x), int(i0), int(i1), int(i2), int(i3), int(i4), int(i5))
+assign{T}(A::Array{T}, x, i0::Integer, i1::Integer, i2::Integer, i3::Integer, i4::Integer, i5::Integer, I::Int...) =
+    arrayset(A, convert(T,x), int(i0), int(i1), int(i2), int(i3), int(i4), int(i5), I...)
 
 function assign{T<:Integer}(A::Array, x, I::AbstractVector{T})
     for i in I
@@ -713,7 +692,7 @@ end
 
 function push(a::Array{Any,1}, item::ANY)
     ccall(:jl_array_grow_end, Void, (Any, Uint), a, 1)
-    arrayset(a, length(a), item)
+    arrayset(a, item, length(a))
     return a
 end
 
@@ -987,33 +966,6 @@ function complex{T<:Real}(A::Array{T}, B::Real)
         F[i] = complex(A[i], B)
     end
     return F
-end
-
-function complex{T<:Real}(A::Array{T})
-    z = zero(T)
-    F = similar(A, typeof(complex(z,z)))
-    for i=1:numel(A)
-        F[i] = complex(A[i], z)
-    end
-    return F
-end
-
-## Binary comparison operators ##
-
-for (f,scalarf) in ((:(.==),:(==)), (:.<, :<), (:.!=,:!=), (:.<=,:<=))
-    @eval begin
-        function ($f)(A::AbstractArray, B::AbstractArray)
-            F = Array(Bool, promote_shape(size(A),size(B)))
-            for i = 1:numel(B)
-                F[i] = ($scalarf)(A[i], B[i])
-            end
-            return F
-        end
-        ($f)(A, B::AbstractArray) =
-            reshape([ ($scalarf)(A, B[i]) for i=1:length(B)], size(B))
-        ($f)(A::AbstractArray, B) =
-            reshape([ ($scalarf)(A[i], B) for i=1:length(A)], size(A))
-    end
 end
 
 # use memcmp for cmp on byte arrays
@@ -1334,10 +1286,38 @@ function nonzeros{T}(A::StridedArray{T})
     return V
 end
 
+function findmax(a::Array)
+    m = typemin(eltype(a))
+    mi = 0
+    for i=1:length(a)
+        if a[i] > m
+            m = a[i]
+            mi = i
+        end
+    end
+    return (m, mi)
+end
+
+function findmin(a::Array)
+    m = typemax(eltype(a))
+    mi = 0
+    for i=1:length(a)
+        if a[i] < m
+            m = a[i]
+            mi = i
+        end
+    end
+    return (m, mi)
+end
+indmax(a::Array) = findmax(a)[2]
+indmin(a::Array) = findmin(a)[2]
+
 ## Reductions ##
 
-areduce{T}(f::Function, A::StridedArray{T}, region::Dimspec, v0) =
-    areduce(f,A,region,v0,T)
+reduced_dims(A, region) = ntuple(ndims(A), i->(contains(region, i) ? 1 : size(A,i)))
+
+areduce(f::Function, A, region::Dimspec, v0) =
+    areduce(f, A, region, v0, similar(A, reduced_dims(A, region)))
 
 # TODO:
 # - find out why inner loop with dimsA[i] instead of size(A,i) is way too slow
@@ -1380,11 +1360,8 @@ function gen_areduce_func(n, f)
 end
 
 global areduce
-function areduce(f::Function, A::StridedArray, region::Dimspec, v0, RType::Type)
-    dimsA = size(A)
+function areduce(f::Function, A, region::Dimspec, v0, R)
     ndimsA = ndims(A)
-    dimsR = ntuple(ndimsA, i->(contains(region, i) ? 1 : dimsA[i]))
-    R = similar(A, RType, dimsR)
 
     if is(areduce_cache,nothing)
         areduce_cache = Dict()
@@ -1416,6 +1393,21 @@ function areduce(f::Function, A::StridedArray, region::Dimspec, v0, RType::Type)
 end
 end
 
+max{T}(A::AbstractArray{T}, b::(), region::Dimspec) = areduce(max,A,region,typemin(T))
+min{T}(A::AbstractArray{T}, b::(), region::Dimspec) = areduce(min,A,region,typemax(T))
+sum{T}(A::AbstractArray{T}, region::Dimspec)  = areduce(+,A,region,zero(T))
+prod{T}(A::AbstractArray{T}, region::Dimspec) = areduce(*,A,region,one(T))
+
+all(A::AbstractArray{Bool}, region::Dimspec) = areduce(all,A,region,true)
+any(A::AbstractArray{Bool}, region::Dimspec) = areduce(any,A,region,false)
+sum(A::AbstractArray{Bool}, region::Dimspec) = areduce(+,A,region,0,similar(A,Int,reduced_dims(A,region)))
+sum(A::AbstractArray{Bool}) = count(A)
+sum(A::StridedArray{Bool})  = count(A)
+prod(A::AbstractArray{Bool}) =
+    error("use all() instead of prod() for boolean arrays")
+prod(A::AbstractArray{Bool}, region::Dimspec) =
+    error("use all() instead of prod() for boolean arrays")
+
 function sum{T}(A::StridedArray{T})
     if isempty(A)
         return zero(T)
@@ -1427,7 +1419,7 @@ function sum{T}(A::StridedArray{T})
     v
 end
 
-function sum{T<:FloatingPoint}(A::StridedArray{T})
+function sum_kbn{T<:FloatingPoint}(A::StridedArray{T})
     n = length(A)
     if (n == 0)
         return zero(T)
@@ -1449,7 +1441,7 @@ function sum{T<:FloatingPoint}(A::StridedArray{T})
 end
 
 # Uses K-B-N summation
-function cumsum{T<:FloatingPoint}(v::StridedVector{T})
+function cumsum_kbn{T<:FloatingPoint}(v::StridedVector{T})
     n = length(v)
     r = similar(v, n)
     if n == 0; return r; end
@@ -1471,7 +1463,7 @@ function cumsum{T<:FloatingPoint}(v::StridedVector{T})
 end
 
 # Uses K-B-N summation
-function cumsum{T<:FloatingPoint}(A::StridedArray{T}, axis::Integer)
+function cumsum_kbn{T<:FloatingPoint}(A::StridedArray{T}, axis::Integer)
     dimsA = size(A)
     ndimsA = ndims(A)
     axis_size = dimsA[axis]
@@ -1539,20 +1531,6 @@ function max{T<:Integer}(A::StridedArray{T})
     v
 end
 
-max{T}(A::StridedArray{T}, b::(), region::Dimspec) = areduce(max,A,region,typemin(T),T)
-min{T}(A::StridedArray{T}, b::(), region::Dimspec) = areduce(min,A,region,typemax(T),T)
-sum{T}(A::StridedArray{T}, region::Dimspec)  = areduce(+,A,region,zero(T))
-prod{T}(A::StridedArray{T}, region::Dimspec) = areduce(*,A,region,one(T))
-
-all(A::StridedArray{Bool}, region::Dimspec) = areduce(all,A,region,true)
-any(A::StridedArray{Bool}, region::Dimspec) = areduce(any,A,region,false)
-sum(A::StridedArray{Bool}, region::Dimspec) = areduce(+,A,region,0,Int)
-sum(A::StridedArray{Bool}) = count(A)
-prod(A::StridedArray{Bool}) =
-    error("use all() instead of prod() for boolean arrays")
-prod(A::StridedArray{Bool}, region::Dimspec) =
-    error("use all() instead of prod() for boolean arrays")
-
 ## map over arrays ##
 
 ## along an axis
@@ -1608,8 +1586,7 @@ function map_to(f, dest::StridedArray, A::StridedArray, B::StridedArray)
     end
     return dest
 end
-function map_to2(f, first, dest::StridedArray,
-                 A::StridedArray, B::StridedArray)
+function map_to2(f, first, dest::StridedArray, A::StridedArray, B::StridedArray)
     dest[1] = first
     for i=2:numel(A)
         dest[i] = f(A[i], B[i])
@@ -1624,48 +1601,6 @@ function map(f, A::StridedArray, B::StridedArray)
     end
     first = f(A[1], B[1])
     dest = similar(A, typeof(first), shp)
-    return map_to2(f, first, dest, A, B)
-end
-
-function map_to(f, dest::StridedArray, A::StridedArray, B::Number)
-    for i=1:numel(A)
-        dest[i] = f(A[i], B)
-    end
-    return dest
-end
-function map_to2(f, first, dest::StridedArray, A::StridedArray, B::Number)
-    dest[1] = first
-    for i=2:numel(A)
-        dest[i] = f(A[i], B)
-    end
-    return dest
-end
-
-function map(f, A::StridedArray, B::Number)
-    if isempty(A); return A; end
-    first = f(A[1], B)
-    dest = similar(A, typeof(first))
-    return map_to2(f, first, dest, A, B)
-end
-
-function map_to(f, dest::StridedArray, A::Number, B::StridedArray)
-    for i=1:numel(B)
-        dest[i] = f(A, B[i])
-    end
-    return dest
-end
-function map_to2(f, first, dest::StridedArray, A::Number, B::StridedArray)
-    dest[1] = first
-    for i=2:numel(B)
-        dest[i] = f(A, B[i])
-    end
-    return dest
-end
-
-function map(f, A::Number, B::StridedArray)
-    if isempty(A); return A; end
-    first = f(A, B[1])
-    dest = similar(B, typeof(first))
     return map_to2(f, first, dest, A, B)
 end
 
@@ -1737,7 +1672,7 @@ function permute(A::StridedArray, perm)
     ndimsA = length(dimsA)
     dimsP = ntuple(ndimsA, i->dimsA[perm[i]])
     P = similar(A, dimsP)
-    ranges = ntuple(ndimsA, i->(colon(1,dimsP[i])))
+    ranges = ntuple(ndimsA, i->(1:dimsP[i]))
     while length(stridenames) < ndimsA
         push(stridenames, gensym())
     end

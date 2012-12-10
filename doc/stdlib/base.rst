@@ -1,3 +1,5 @@
+.. currentmodule:: Base
+
 Getting Around
 --------------
 
@@ -33,6 +35,10 @@ Getting Around
 .. function:: which(f, args...)
 
    Show which method of ``f`` will be called for the given arguments
+
+.. function:: methods(f)
+
+   Show all methods of ``f`` with their argument types
 
 All Objects
 -----------
@@ -126,11 +132,11 @@ Types
 
 .. function:: eps([type])
 
-   The distance between 1.0 and the next largest representable floating-point value of ``type``. The only types that are sensible arguments are ``Float32`` and ``Float64``. If ``type`` is omitted, then ``eps(Float64)`` is returned.
+   The distance between 1.0 and the next larger representable floating-point value of ``type``. The only types that are sensible arguments are ``Float32`` and ``Float64``. If ``type`` is omitted, then ``eps(Float64)`` is returned.
 
 .. function:: eps(x)
 
-   The distance between ``x`` and the next largest representable floating-point value of the same type as ``x``.
+   The distance between ``x`` and the next larger representable floating-point value of the same type as ``x``.
 
 .. function:: promote_type(type1, type2)
 
@@ -222,6 +228,22 @@ Iterable Collections
 
    Determine minimum element in a collection
 
+.. function:: indmax(itr)
+
+   Returns the index of the maximum element in a collection
+
+.. function:: indmin(itr)
+
+   Returns the index of the minimum element in a collection
+
+.. function:: findmax(iter)
+
+   Returns a tuple of the maximum element and its index
+
+.. function:: findmin(iter)
+
+   Returns a tuple of the minimum element and its index
+
 .. function:: sum(itr)
 
    Sum elements of a collection
@@ -280,7 +302,7 @@ Associative Collections
 
 ``Dict`` is the standard associative collection. Its implementation uses the ``hash(x)`` as the hashing function for the key, and ``isequal(x,y)`` to determine equality. Define these two functions for custom types to override how they are stored in a hash table.
 
-``ObjectIdDict`` is a special hash table where the keys are always object identities. ``WeakKeyDict`` is a hash table implementation where the keys are weak references to objects, and thus maybe garbage collected even when referenced in a hash table.
+``ObjectIdDict`` is a special hash table where the keys are always object identities. ``WeakKeyDict`` is a hash table implementation where the keys are weak references to objects, and thus may be garbage collected even when referenced in a hash table.
 
 Dicts can be created using a literal syntax: ``{"A"=>1, "B"=>2}``
 
@@ -303,6 +325,34 @@ Dicts can be created using a literal syntax: ``{"A"=>1, "B"=>2}``
 .. function:: del_all(collection)
 
    Delete all keys from a collection.
+
+.. function:: keys(collection)
+
+   Return an array of all keys in a collection.
+
+.. function:: values(collection)
+
+   Return an array of all values in a collection.
+
+.. function:: pairs(collection)
+
+   Return an array of all (key, value) tuples in a collection.
+
+.. function:: merge(collection, others...)
+
+   Construct a merged collection from the given collections.
+
+.. function:: merge!(collection, others...)
+
+   Update collection with pairs from the other collections
+
+.. function:: filter(function, collection)
+
+   Return a copy of collection, removing (key, value) pairs for which function is false.
+
+.. function:: filter!(function, collection)
+
+   Update collection, removing (key, value) pairs for which function is false.
 
 Fully implemented by: ``ObjectIdDict``, ``Dict``, ``WeakKeyDict``.
 
@@ -672,7 +722,13 @@ Mathematical Functions
 
    Unary minus
 
-``+`` ``-`` ``*`` ``.*`` ``/`` ``./`` ``\`` ``.\`` ``^`` ``.^``
+.. function:: + - * / \\ ^
+
+   The binary addition, subtraction, multiplication, left division, right division, and exponentiation operators
+
+.. function:: .* ./ .\\ .^
+
+   The element-wise binary addition, subtraction, multiplication, left division, right division, and exponentiation operators
 
 .. function:: div
 
@@ -682,15 +738,25 @@ Mathematical Functions
 
    Integer floor division
 
-``mod`` ``%``
+.. function:: mod 
+
+   Modulus after division
+
+.. function:: rem %
+
+   Remainder after division
 
 .. function:: //
 
    Rational division
 
-``<<`` ``>>`` ``>>>``
+.. function:: << >>
 
-``==`` ``!=`` ``<`` ``<=`` ``>`` ``>=``
+   Left and right shift operators
+
+.. function:: == != < <= > >=
+
+   Comparison operators to test equals, not equals, less than, less than or equals, greater than, and greater than or equals
 
 .. function:: !
 
@@ -712,17 +778,162 @@ Mathematical Functions
 
    Bitwise exclusive or
 
-``sin`` ``cos`` ``tan`` ``sinh`` ``cosh`` ``tanh`` ``asin`` ``acos`` ``atan`` ``atan2`` ``sec`` ``csc`` ``cot`` ``asec`` ``acsc`` ``acot`` ``sech`` ``csch`` ``coth`` ``acosh`` ``asinh`` ``atanh`` ``asech`` ``acsch`` ``acoth`` ``sinc`` ``cosc`` ``hypot`` ``log`` ``log2`` ``log10``
+.. function:: sin(x)
+
+   Compute sine of ``x``
+
+.. function:: cos(x)
+
+   Compute cosine of ``x``
+
+.. function:: tan(x)
+
+   Compute tangent of ``x``
+
+.. function:: sinh(x)
+
+   Compute hyperbolic sine of ``x`` specified in radians
+
+.. function:: cosh(x)
+
+   Compute hyperbolic cosine of ``x`` specified in radians
+
+.. function:: tanh(x)
+
+   Compute hyperbolic tangent of ``x`` specified in radians
+
+.. function:: asin(x)
+
+   Compute the inverse sine of ``x`` specified in radians
+
+.. function:: acos(x)
+
+   Compute the inverse cosine of ``x`` specified in radians
+
+.. function:: atan(x)
+
+   Compute the inverse tangent of ``x`` specified in radians
+
+.. function:: atan2(x, y)
+
+   Compute the inverse tangent of ``y/x``, using the signs of both ``x`` and ``y`` to determine the quadrant of the return value.
+
+.. function:: sec(x)
+
+   Compute the secant of ``x`` specified in radians
+
+.. function:: csc(x)
+
+   Compute the cosecant of ``x`` specified in radians
+
+.. function:: cot(x)
+
+   Compute the cotangent of ``x`` specified in radians
+
+.. function:: asec(x)
+
+   Compute the inverse secant of ``x`` specified in radians
+
+.. function:: acsc(x)
+
+   Compute the inverse cosecant of ``x`` specified in radians
+
+.. function:: acot(x)
+
+   Compute the inverse cotangent of ``x`` specified in radians
+
+.. function:: sech(x)
+
+   Compute the hyperbolic secant of ``x`` specified in radians
+
+.. function:: csch(x)
+
+   Compute the hyperbolic cosecant of ``x`` specified in radians
+
+.. function:: coth(x)
+
+   Compute the hyperbolic cotangent of ``x`` specified in radians
+
+.. function:: asinh(x)
+
+   Compute the inverse hyperbolic sine of ``x`` specified in radians
+
+.. function:: acosh(x)
+
+   Compute the inverse hyperbolic cosine of ``x`` specified in radians
+
+.. function:: atanh(x)
+
+   Compute the inverse hyperbolic cotangent of ``x`` specified in radians
+
+.. function:: asech(x)
+
+   Compute the inverse hyperbolic secant of ``x`` specified in radians
+
+.. function:: acsch(x)
+
+   Compute the inverse hyperbolic cosecant of ``x`` specified in radians
+
+.. function:: acoth(x)
+
+   Compute the inverse hyperbolic cotangent of ``x`` specified in radians
+
+.. function:: sinc(x)
+
+   Compute :math:`sin(\pi x) / x`
+
+.. function:: cosc(x)
+
+   Compute :math:`cos(\pi x) / x`
+
+.. function:: hypot(x, y)
+
+   Compute the :math:`\sqrt{(x^2+y^2)}` without undue overflow or underflow
+
+.. function:: log(x)
+   
+   Compute the natural logarithm of ``x``
+
+.. function:: log2(x)
+
+   Compute the natural logarithm of ``x`` to base 2
+
+.. function:: log10(x)
+
+   Compute the natural logarithm of ``x`` to base 10
 
 .. function:: log1p(x)
 
    Accurate natural logarithm of ``1+x``
 
-``logb`` ``ilogb`` ``frexp`` ``significand`` ``exp``
+.. function:: logb(x)
+
+   Return the exponent of x, represented as a floating-point number
+
+.. function:: ilogb(x) 
+
+   Return the exponent of x, represented as a signed integer value
+
+.. function:: frexp(val, exp)
+
+   Return a number ``x`` such that it has a magnitude in the interval ``[1/2, 1)`` or 0,
+   and val = :math:`x \times 2^{exp}`.
+
+.. function:: exp(x)
+
+   Compute :math:`e^x`
+
+.. function:: exp2(x)
+
+   Compute :math:`2^x`
+
+.. function:: ldexp(x, n)
+
+   Compute :math:`x \times 2^n`
 
 .. function:: expm1(x)
 
-   Accurately compute ``exp(x)-1``
+   Accurately compute :math:`e^x-1`
 
 .. function:: round(x[, digits[, base]]) -> FloatingPoint
 
@@ -760,13 +971,73 @@ Mathematical Functions
 
    Rounds (in the sense of ``round``) ``x`` so that there are ``digits`` significant digits, under a base ``base`` representation, default 10. E.g., ``signif(123.456, 2)`` is ``120.0``, and ``signif(357.913, 4, 2)`` is ``352.0``. 
 
-``exp2`` ``ldexp`` ``min`` ``max`` ``clamp`` ``abs``
+.. function:: min(x, y)
+
+   Return the minimum of ``x`` and ``y``
+
+.. function:: max(x, y)
+
+   Return the maximum of ``x`` and ``y``
+
+.. function:: clamp(x, lo, hi)
+
+   Return x if ``lo <= x <= y``. If ``x < lo``, return ``lo``. If ``x > hi``, return ``hi``.
+
+.. function:: abs(x)
+
+   Absolute value of ``x``
 
 .. function:: abs2(x)
 
    Squared absolute value of ``x``
 
-``copysign`` ``sign`` ``signbit`` ``sqrt`` ``cbrt`` ``erf`` ``erfc`` ``gamma`` ``lgamma`` ``lfact`` ``real`` ``imag`` ``conj`` ``angle`` ``cis(theta)``
+.. function:: copysign(x, y)
+
+   Return ``x`` such that it has the same sign as ``y``
+
+.. function:: sign(x)
+
+   Return ``+1`` if ``x`` is positive, ``0`` if ``x == 0``, and ``-1`` if ``x`` is negative.
+
+.. function:: signbit(x)
+
+   Returns non-zero if the value of the sign of ``x`` is negative, otherwise ``0``.
+
+.. function:: sqrt(x)
+   
+   Return :math:`\sqrt{x}`
+
+.. function:: cbrt(x)
+
+   Return :math:`x^{1/3}`
+
+.. function:: erf(x)
+
+   Compute the error function of ``x``
+
+.. function:: erfc(x)
+
+   Compute the complementary error function of ``x``
+
+.. function:: real(z)
+
+   Return the real part of the complex number ``z``
+
+.. function:: imag(z)
+
+   Return the imaginary part of the complex number ``z``
+
+.. function:: conj(z)
+
+   Compute the complex conjugate of a complex number ``z``
+
+.. function:: angle(z)
+
+   Compute the phase angle of a complex number ``z``   
+
+.. function:: cis(z)
+
+   Return ``cos(z) + i*sin(z)`` if z is real. Return ``(cos(real(z)) + i*sin(real(z)))/exp(imag(z))`` if ``z`` is complex
 
 .. function:: binomial(n,k)
 
@@ -811,6 +1082,85 @@ Mathematical Functions
 .. function:: powermod(x, p, m)
 
    Compute ``mod(x^p, m)``
+
+.. function:: gamma(x)
+.. function:: lgamma(x)
+.. function:: lfact(x)
+
+.. function:: airy(x)
+              airyai(x)
+
+   Airy function :math:`\operatorname{Ai}(x)`.
+
+.. function:: airyprime(x)
+              airyaiprime(x)
+
+   Airy function derivative :math:`\operatorname{Ai}'(x)`.
+
+.. function:: airybi(x)
+
+   Airy function :math:`\operatorname{Bi}(x)`.
+
+.. function:: airybiprime(x)
+
+   Airy function derivative :math:`\operatorname{Bi}'(x)`.
+
+.. function:: besselj0(x)
+
+   Bessel function of the first kind of order 0, :math:`J_0(x)`.
+
+.. function:: besselj1(x)
+
+   Bessel function of the first kind of order 1, :math:`J_1(x)`.
+
+.. function:: besselj(nu, x)
+
+   Bessel function of the first kind of order ``nu``, :math:`J_\nu(x)`.
+
+.. function:: bessely0(x)
+
+   Bessel function of the second kind of order 0, :math:`Y_0(x)`.
+
+.. function:: bessely1(x)
+
+   Bessel function of the second kind of order 1, :math:`Y_1(x)`.
+
+.. function:: bessely(nu, x)
+
+   Bessel function of the second kind of order ``nu``, :math:`Y_\nu(x)`.
+
+.. function:: hankelh1(nu, x)
+
+   Bessel function of the third kind of order ``nu``, :math:`H^{(1)}_\nu(x)`.
+
+.. function:: hankelh2(nu, x)
+
+   Bessel function of the third kind of order ``nu``, :math:`H^{(2)}_\nu(x)`.
+
+.. function:: besseli(nu, x)
+
+   Modified Bessel function of the first kind of order ``nu``, :math:`I_\nu(x)`.
+
+.. function:: besselk(nu, x)
+
+   Modified Bessel function of the second kind of order ``nu``, :math:`K_\nu(x)`.
+
+.. function:: beta(x, y)
+
+   Euler integral of the first kind :math:`\operatorname{B}(x,y) = \Gamma(x)\Gamma(y)/\Gamma(x+y)`.
+
+.. function:: lbeta(x, y)
+
+   Natural logarithm of the beta function :math:`\log(\operatorname{B}(x,y))`.
+
+.. function:: eta(x)
+
+   Dirichlet eta function :math:`\eta(s) = \sum^\infty_{n=1}(-)^{n-1}/n^{s}`.
+
+.. function:: zeta(x)
+
+   Riemann zeta function :math:`\zeta(s)`.
+
 
 Data Formats
 ------------
@@ -1143,6 +1493,10 @@ Constructors
 
    Construct a vector of ``n`` linearly-spaced elements from ``start`` to ``stop``.
 
+.. function:: logspace(start, stop, n)
+
+   Construct a vector of ``n`` logarithmically-spaced numbers from ``10^start`` to ``10^stop``.
+
 Mathematical operators and functions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1223,6 +1577,60 @@ Indexing, Assignment, and Concatenation
 
    Make a vector out of an array with only one non-singleton dimension.
 
+Sparse Matrices
+---------------
+
+Sparse matrices support much of the same set of operations as dense matrices. The following functions are specific to sparse matrices.
+
+.. function:: sparse(I,J,V[,m,n,combine])
+
+   Create a sparse matrix ``S`` of dimensions ``m x n`` such that ``S[I[k], J[k]] = V[k]``. The ``combine`` function is used to combine duplicates. If ``m`` and ``n`` are not specified, they are set to ``max(I)`` and ``max(J)`` respectively. If the ``combine`` function is not supplied, duplicates are added by default.
+
+.. function:: issparse(S)
+
+   Returns ``true`` if ``S`` is sparse, and ``false`` otherwise.
+
+.. function:: nnz(S)
+
+   Return the number of nonzeros in ``S``.
+
+.. function:: sparse(A)
+
+   Convert a dense matrix ``A`` into a sparse matrix.
+
+.. function:: dense(S)
+
+   Convert a sparse matrix ``S`` into a dense matrix.   
+
+.. function:: full(S)
+
+   Convert a sparse matrix ``S`` into a dense matrix.   
+
+.. function:: spzeros(m,n)
+
+   Create an empty sparse matrix of size ``m x n``.
+
+.. function:: speye(type,m[,n])
+
+   Create a sparse identity matrix of specified type of size ``m x m``. In case ``n`` is supplied, create a sparse identity matrix of size ``m x n``.
+
+.. function:: spones(S)
+
+   Create a sparse matrix with the same structure as that of ``S``, but with every nonzero element having the value ``1.0``.
+
+.. function:: sprand(m,n,density[,rng])
+
+   Create a random sparse matrix with the specified density. Nonzeros are sampled from the distribution specified by ``rng``. The uniform distribution is used in case ``rng`` is not specified.
+
+.. function:: sprandn(m,n,density)
+
+   Create a random sparse matrix of specified density with nonzeros sampled from the normal distribution.
+
+.. function:: sprandbool(m,n,density)
+
+   Create a random sparse boolean matrix with the specified density.
+
+
 Linear Algebra
 --------------
 
@@ -1234,7 +1642,7 @@ Linear algebra functions in Julia are largely implemented by calling functions f
 
 .. function:: \
 
-   Matrix division using a polyalgorithm. For input matrices ``A`` and ``B``, the result ``X`` is such that ``A*X == B``. For rectangular ``A``, QR factorization is used. For triangular ``A``, a triangular solve is performed. For square ``A``, Cholesky factorization is tried if the input is symmetric with a heavy diagonal. LU factorization is used in case Cholesky factorization fails or for general square inputs.
+   Matrix division using a polyalgorithm. For input matrices ``A`` and ``B``, the result ``X`` is such that ``A*X == B``. For rectangular ``A``, QR factorization is used. For triangular ``A``, a triangular solve is performed. For square ``A``, Cholesky factorization is tried if the input is symmetric with a heavy diagonal. LU factorization is used in case Cholesky factorization fails or for general square inputs. If ``size(A,1) > size(A,2)``, the result is a least squares solution of ``A*X+eps=B`` using the singular value decomposition. ``A`` does not need to have full rank.
 
 .. function:: dot
 
@@ -1272,9 +1680,17 @@ Linear algebra functions in Julia are largely implemented by calling functions f
 
    Compute eigenvalues and eigenvectors of A
 
-.. function:: svd(A) -> U, S, V
+.. function:: eigvals(A)
+
+   Returns the eigenvalues of ``A``.
+
+.. function:: svd(A) -> U, S, V'
 
    Compute the SVD of A
+
+.. function:: svdvals(A)
+
+   Returns the singular values of ``A``.
 
 .. function:: triu(M)
 
@@ -1318,7 +1734,15 @@ Linear algebra functions in Julia are largely implemented by calling functions f
 
 .. function:: inv(M)
 
-   Matrix inverse, or generalized ``1/M``
+   Matrix inverse
+
+.. function:: pinv(M)
+
+   Moore-Penrose inverse
+
+.. function:: null(M)
+
+   Basis for null space of M
 
 .. function:: repmat(A, n, m)
 
@@ -1430,9 +1854,9 @@ Statistics
 
    Compute the histogram of ``v``, optionally using ``n`` bins
 
-.. function:: histc(v[, e])
+.. function:: histc(v, e)
 
-   Compute the histogram of ``v``, optionally using a vector ``e`` as the edges for the bins
+   Compute the histogram of ``v`` using a vector ``e`` as the edges for the bins
 
 Signal Processing
 -----------------
@@ -1653,6 +2077,15 @@ System
 .. function:: cd("dir")
 
    Set the current working directory. Returns the new current directory.
+
+.. function:: mkdir(path[, mode])
+
+   Make a new directory with name ``path`` and permissions ``mode``.
+   ``mode`` defaults to 0o777, modified by the current file creation mask.
+
+.. function:: rmdir(path)
+
+   Remove the directory named ``path``.
 
 .. function:: getpid()
 

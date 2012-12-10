@@ -23,41 +23,47 @@ DLLEXPORT char *julia_home = NULL;
 // current line number in a file
 int jl_lineno = 0;
 
+jl_module_t *jl_old_base_module = NULL;
+
 jl_value_t *jl_toplevel_eval_flex(jl_value_t *e, int fast);
 
 jl_value_t *jl_eval_module_expr(jl_expr_t *ex)
 {
     assert(ex->head == module_sym);
     jl_module_t *last_module = jl_current_module;
-    jl_sym_t *name = (jl_sym_t*)jl_exprarg(ex, 0);
+    int std_imports = (jl_exprarg(ex,0)==jl_true);
+    jl_sym_t *name = (jl_sym_t*)jl_exprarg(ex, 1);
     if (!jl_is_symbol(name)) {
         jl_type_error("module", (jl_value_t*)jl_sym_type, (jl_value_t*)name);
     }
-    jl_module_t *parent_module;
-    if (jl_current_module == jl_core_module ||
-        jl_current_module == jl_main_module) {
-        parent_module = jl_root_module;
-    }
-    else {
-        parent_module = jl_current_module;
-    }
+    jl_module_t *parent_module = jl_current_module;
     jl_binding_t *b = jl_get_binding_wr(parent_module, name);
     jl_declare_constant(b);
     if (b->value != NULL) {
         JL_PRINTF(JL_STDERR, "Warning: replacing module %s\n", name->name);
     }
     jl_module_t *newm = jl_new_module(name);
-    newm->parent = (jl_value_t*)parent_module;
+    newm->parent = parent_module;
     b->value = (jl_value_t*)newm;
-    if (parent_module == jl_root_module && name == jl_symbol("Base") &&
-        jl_base_module == NULL) {
+    if (parent_module == jl_main_module && name == jl_symbol("Base")) {
+        jl_old_base_module = jl_base_module;
         // pick up Base module during bootstrap
         jl_base_module = newm;
     }
+    // export all modules from Main
+    if (parent_module == jl_main_module)
+        jl_module_export(jl_main_module, name);
+
+    // add standard imports unless baremodule
+    if (std_imports) {
+        if (jl_base_module != NULL)
+            jl_module_using(newm, jl_base_module); // using Base
+    }
+
     JL_GC_PUSH(&last_module);
     jl_current_module = newm;
 
-    jl_array_t *exprs = ((jl_expr_t*)jl_exprarg(ex, 1))->args;
+    jl_array_t *exprs = ((jl_expr_t*)jl_exprarg(ex, 2))->args;
     JL_TRY {
         for(int i=0; i < exprs->length; i++) {
             // process toplevel form
@@ -66,9 +72,8 @@ jl_value_t *jl_eval_module_expr(jl_expr_t *ex)
         }
     }
     JL_CATCH {
-        JL_GC_POP();
         jl_current_module = last_module;
-        jl_raise(jl_exception_in_transit);
+        jl_rethrow();
     }
     JL_GC_POP();
     jl_current_module = last_module;
@@ -92,10 +97,19 @@ jl_value_t *jl_eval_module_expr(jl_expr_t *ex)
     return jl_nothing;
 }
 
-static int is_intrinsic(jl_sym_t *s)
+static int is_intrinsic(jl_module_t *m, jl_sym_t *s)
 {
-    jl_value_t *v = jl_get_global(jl_current_module, s);
+    jl_value_t *v = jl_get_global(m, s);
     return (v != NULL && jl_typeof(v)==(jl_type_t*)jl_intrinsic_type);
+}
+
+// module referenced by TopNode from within m
+// this is only needed because of the bootstrapping process:
+// - initially Base doesn't exist and top === Core
+// - later, it refers to either old Base or new Base
+jl_module_t *jl_base_relative_to(jl_module_t *m)
+{
+    return (m==jl_core_module||m==jl_old_base_module||jl_base_module==NULL) ? m : jl_base_module;
 }
 
 static int has_intrinsics(jl_expr_t *e)
@@ -105,8 +119,8 @@ static int has_intrinsics(jl_expr_t *e)
     if (e->head == static_typeof_sym) return 1;
     jl_value_t *e0 = jl_exprarg(e,0);
     if (e->head == call_sym &&
-        ((jl_is_symbol(e0) && is_intrinsic((jl_sym_t*)e0)) ||
-         (jl_is_topnode(e0) && is_intrinsic((jl_sym_t*)jl_fieldref(e0,0)))))
+        ((jl_is_symbol(e0) && is_intrinsic(jl_current_module,(jl_sym_t*)e0)) ||
+         (jl_is_topnode(e0) && is_intrinsic(jl_base_relative_to(jl_current_module),(jl_sym_t*)jl_fieldref(e0,0)))))
         return 1;
     int i;
     for(i=0; i < e->args->length; i++) {
@@ -171,8 +185,25 @@ extern int jl_in_inference;
 
 static jl_module_t *eval_import_path(jl_array_t *args)
 {
-    jl_module_t *m = jl_root_module;
-    for(size_t i=0; i < args->length-1; i++) {
+    // in A.B.C, first find a binding for A in the chain of module scopes
+    // following parent links. then evaluate the rest of the path from there.
+    jl_sym_t *var = (jl_sym_t*)jl_cellref(args,0);
+    assert(jl_is_symbol(var));
+    jl_module_t *m = jl_current_module;
+    while (1) {
+        jl_binding_t *mb = jl_get_binding(m, var);
+        if (mb != NULL) {
+            if (mb->value == NULL || !jl_is_module(mb->value))
+                jl_errorf("invalid module path");
+            m = (jl_module_t*)mb->value;
+            break;
+        }
+        if (m == jl_main_module)
+            jl_errorf("in module path: %s not defined", var->name);
+        m = m->parent;
+    }
+
+    for(size_t i=1; i < args->length-1; i++) {
         jl_value_t *s = jl_cellref(args,i);
         assert(jl_is_symbol(s));
         m = (jl_module_t*)jl_eval_global_var(m, (jl_sym_t*)s);
@@ -199,15 +230,15 @@ jl_value_t *jl_toplevel_eval_flex(jl_value_t *e, int fast)
         return jl_eval_module_expr(ex);
     }
 
-    // handle import, export toplevel-only forms
-    if (ex->head == importall_sym) {
+    // handle import, using, export toplevel-only forms
+    if (ex->head == using_sym) {
         jl_module_t *m = eval_import_path(ex->args);
         jl_sym_t *name = (jl_sym_t*)jl_cellref(ex->args, ex->args->length-1);
         assert(jl_is_symbol(name));
         m = (jl_module_t*)jl_eval_global_var(m, name);
         if (!jl_is_module(m))
-            jl_errorf("invalid import statement");
-        jl_module_importall(jl_current_module, m);
+            jl_errorf("invalid using statement");
+        jl_module_using(jl_current_module, m);
         return jl_nothing;
     }
 
@@ -310,7 +341,6 @@ void jl_parse_eval_all(char *fname)
     jl_value_t *fn=NULL, *ln=NULL, *form=NULL;
     JL_GC_PUSH(&fn, &ln, &form);
     JL_TRY {
-        jl_register_toplevel_eh();
         // handle syntax error
         while (1) {
             form = jl_parse_next();
@@ -332,8 +362,8 @@ void jl_parse_eval_all(char *fname)
         fn = jl_pchar_to_string(fname, strlen(fname));
         ln = jl_box_long(jl_lineno);
         jl_lineno = last_lineno;
-        jl_raise(jl_new_struct(jl_loaderror_type, fn, ln,
-                               jl_exception_in_transit));
+        jl_rethrow_other(jl_new_struct(jl_loaderror_type, fn, ln,
+                                       jl_exception_in_transit));
     }
     jl_stop_parsing();
     jl_lineno = last_lineno;

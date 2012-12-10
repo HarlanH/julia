@@ -26,6 +26,10 @@ static const char *opts =
     " -p n                     Run n local processes\n"
     " --machinefile file       Run processes on hosts listed in file\n\n"
 
+    " --no-history             Don't load or save history\n"
+    " -f --no-startup          Don't load ~/.juliarc.jl\n"
+    " -F                       Load ~/.juliarc.jl, then handle remaining inputs\n\n"
+
     " -h --help                Print this message\n";
 
 void parse_opts(int *argcp, char ***argvp) {
@@ -143,7 +147,6 @@ static int exec_program(void)
     int err = 0;
  again: ;
     JL_TRY {
-        jl_register_toplevel_eh();
         if (err) {
             //jl_lisp_prompt();
             //return 1;
@@ -157,9 +160,6 @@ static int exec_program(void)
                     if (jl_typeof(e) == (jl_type_t*)jl_loaderror_type) {
                         e = jl_fieldref(e, 2);
                         // TODO: show file and line
-                    }
-                    else if (jl_typeof(e) == (jl_type_t*)jl_backtrace_type) {
-                        e = jl_fieldref(e, 0);
                     }
                     else break;
                 }
@@ -225,7 +225,7 @@ int true_main(int argc, char *argv[])
         jl_set_global(jl_base_module, jl_symbol("ARGS"), (jl_value_t*)args);
         int i;
         for (i=0; i < argc; i++) {
-            jl_arrayset(args, i, (jl_value_t*)jl_cstr_to_string(argv[i]));
+            jl_arrayset(args, (jl_value_t*)jl_cstr_to_string(argv[i]), i);
         }
     }
     jl_set_const(jl_core_module, jl_symbol("JULIA_HOME"),

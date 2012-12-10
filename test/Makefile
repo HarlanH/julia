@@ -1,14 +1,14 @@
 JULIAHOME = ..
 include ../Make.inc
 
-default all extra unicode::
+default all extra unicode gzip::
 	@$(MAKE) -sC unicode
 
 TESTS = default all extra \
-core numbers strings unicode corelib hashing \
-arrayops lapack factorizations fft sparse arpack bitarray \
-random special functional bigint dists combinatorics statistics \
-glpk linprog sparse bigfloat poly file Rmath remote zlib
+core numbers strings unicode corelib hashing remote \
+arrayops linalg fft sparse bitarray suitesparse arpack \
+random math functional bigint combinatorics statistics \
+glpk linprog bigfloat poly file Rmath remote zlib image gzip
 
 $(TESTS) ::
 	$(QUIET_JULIA) $(JULIA_EXECUTABLE) ./runtests.jl $@

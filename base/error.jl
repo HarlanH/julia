@@ -2,11 +2,17 @@
 
 error(e::Exception) = throw(e)
 error{E<:Exception}(::Type{E}) = throw(E())
-error(s...) = throw(ErrorException(string(s...)))
+error(s::String) = throw(ErrorException(s))
+error(s...)      = throw(ErrorException(string(s...)))
 
 macro unexpected()
     :(error("unexpected branch reached"))
 end
+
+rethrow() = ccall(:jl_rethrow, Void, ())
+rethrow(e) = ccall(:jl_rethrow_other, Void, (Any,), e)
+
+backtrace() = ccall(:jl_get_backtrace, Array{Any,1}, ())
 
 ## system error handling ##
 

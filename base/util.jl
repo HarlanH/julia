@@ -51,14 +51,16 @@ macro elapsed(ex)
     end
 end
 
-function peakflops()
-    a = rand(2000,2000)
+function peakflops(n)
+    a = rand(n,n)
     t = @elapsed a*a
     t = @elapsed a*a
-    floprate = (2*2000.0^3/t)
+    floprate = (2.0*n^3/t)
     println("The peak flop rate is ", floprate*1e-9, " gigaflops")
     floprate
 end
+
+peakflops() = peakflops(2000)
 
 # source files, editing, function reflection
 
@@ -68,7 +70,7 @@ function function_loc(f::Function, types)
             lsd = m[3]::LambdaStaticData
             ln = lsd.line
             if ln > 0
-                return (string(lsd.file), ln)
+                return (find_in_path(string(lsd.file)), ln)
             end
         end
     end
@@ -165,7 +167,7 @@ methods(t::CompositeKind) = (methods(t,Tuple);  # force constructor creation
 
 # require
 # Store list of files and their load time
-global _jl_package_list = Dict{ByteString,Float64}()
+_jl_package_list = (ByteString=>Float64)[]
 require(fname::String) = require(bytestring(fname))
 require(f::String, fs::String...) = (require(f); for x in fs require(x); end)
 function require(name::ByteString)
@@ -187,31 +189,26 @@ const load = require
 include_string(txt::ByteString) = ccall(:jl_load_file_string, Void, (Ptr{Uint8},), txt)
 
 function is_file_readable(path)
-    local f
-    try
-        f = open(bytestring(path))
-    catch
-        return false
-    end
-    close(f)
-    return true
+    s = stat(bytestring(path))
+    return isfile(s) && isreadable(s)
 end
 
-function find_in_path(fname)
-    if fname[1] == '/'
-        return real_path(fname)
+function find_in_path(name::String)
+    name[1] == '/' && return realpath(name)
+    isfile(name) && return realpath(name)
+    base = name
+    if ends_with(name,".jl")
+        base = match(r"^(.*)\.jl$",name).captures[1]
+    else
+        name = strcat(base,".jl")
     end
-    for pfx in LOAD_PATH
-        if pfx != "" && pfx[end] != '/'
-            pfxd = strcat(pfx,"/",fname)
-        else
-            pfxd = strcat(pfx,fname)
-        end
-        if is_file_readable(pfxd)
-            return real_path(pfxd)
-        end
+    for prefix in LOAD_PATH
+        path = strcat(prefix,"/",base,"/src/",name)
+        is_file_readable(path) && return realpath(path)
+        path = strcat(prefix,"/",name)
+        is_file_readable(path) && return realpath(path)
     end
-    return real_path(fname)
+    return realpath(name)
 end
 
 begin
@@ -239,21 +236,17 @@ function load_now(fname::ByteString)
         end
     else
         in_load = true
-        iserr, err = false, ()
         try
-            ccall(:jl_register_toplevel_eh, Void, ())
             load_now(fname)
             for p = 1:nprocs()
                 if p != myid()
                     remote_do(p, remote_load, load_dict)
                 end
             end
-        catch e
-            iserr, err = true, e
+        finally
+            load_dict = {}
+            in_load = false
         end
-        load_dict = {}
-        in_load = false
-        if iserr throw(err); end
     end
 end
 
@@ -262,41 +255,70 @@ function remote_load(dict)
     in_remote_load = true
     try
         load_now(dict[1])
-    catch e
+    finally
         in_remote_load = false
-        throw(e)
     end
-    in_remote_load = false
     nothing
 end
 end
 
-evalfile(fname::String) = eval(parse(readall(fname))[1])
+evalfile(fname::String) = eval(Main,parse(readall(fname))[1])
 
 # help
 
 _jl_help_category_list = nothing
 _jl_help_category_dict = nothing
+_jl_help_module_dict = nothing
 _jl_help_function_dict = nothing
 
+function _jl_decor_help_desc(func::String, mfunc::String, desc::String)
+    sd = split(desc, '\n')
+    for i = 1:length(sd)
+        if begins_with(sd[i], func)
+            sd[i] = mfunc * sd[i][length(func)+1:end]
+        else
+            break
+        end
+    end
+    return join(sd, '\n')
+end
+
 function _jl_init_help()
-    global _jl_help_category_list, _jl_help_category_dict, _jl_help_function_dict
+    global _jl_help_category_list, _jl_help_category_dict,
+           _jl_help_module_dict, _jl_help_function_dict
     if _jl_help_category_dict == nothing
         println("Loading help data...")
-        helpdb = evalfile("$JULIA_HOME/../lib/julia/helpdb.jl")
+        helpdb = evalfile("$JULIA_HOME/../share/julia/helpdb.jl")
         _jl_help_category_list = {}
         _jl_help_category_dict = Dict()
+        _jl_help_module_dict = Dict()
         _jl_help_function_dict = Dict()
-        for (cat,func,desc) in helpdb
+        for (cat,mod,func,desc) in helpdb
             if !has(_jl_help_category_dict, cat)
                 push(_jl_help_category_list, cat)
                 _jl_help_category_dict[cat] = {}
             end
-            push(_jl_help_category_dict[cat], func)
-            if !has(_jl_help_function_dict, func)
-                _jl_help_function_dict[func] = {}
+            if !isempty(mod)
+                if begins_with(func, '@')
+                    mfunc = "@" * mod * "." * func[2:]
+                else
+                    mfunc = mod * "." * func
+                end
+                desc = _jl_decor_help_desc(func, mfunc, desc)
+            else
+                mfunc = func
             end
-            push(_jl_help_function_dict[func], desc)
+            push(_jl_help_category_dict[cat], mfunc)
+            if !has(_jl_help_function_dict, mfunc)
+                _jl_help_function_dict[mfunc] = {}
+            end
+            push(_jl_help_function_dict[mfunc], desc)
+            if !has(_jl_help_module_dict, func)
+                _jl_help_module_dict[func] = {}
+            end
+            if !contains(_jl_help_module_dict[func], mod)
+                push(_jl_help_module_dict[func], mod)
+            end
         end
     end
 end
@@ -306,7 +328,7 @@ function help()
     print(
 " Welcome to Julia. The full manual is available at
 
-    http://julialang.org/manual/
+    http://docs.julialang.org
 
  To get help on a function, try help(function). To search all help text,
  try apropos(\"string\"). To see available functions, try help(category),
@@ -348,9 +370,32 @@ end
 help_for(s::String) = help_for(s, 0)
 function help_for(fname::String, obj)
     _jl_init_help()
-    if has(_jl_help_function_dict, fname)
-        _jl_print_help_entries(_jl_help_function_dict[fname])
+    found = false
+    if contains(fname, '.')
+        if has(_jl_help_function_dict, fname)
+            _jl_print_help_entries(_jl_help_function_dict[fname])
+            found = true
+        end
     else
+        macrocall = ""
+        if begins_with(fname, '@')
+            sfname = fname[2:]
+            macrocall = "@"
+        else
+            sfname = fname
+        end
+        if has(_jl_help_module_dict, fname)
+            allmods = _jl_help_module_dict[fname]
+            alldesc = {}
+            for mod in allmods
+                mod_prefix = isempty(mod) ? "" : mod * "."
+                append!(alldesc, _jl_help_function_dict[macrocall * mod_prefix * sfname])
+            end
+            _jl_print_help_entries(alldesc)
+            found = true
+        end
+    end
+    if !found
         if isgeneric(obj)
             repl_show(obj); println()
         else
@@ -363,20 +408,21 @@ function apropos(txt::String)
     _jl_init_help()
     n = 0
     r = Regex("\\Q$txt", PCRE.CASELESS)
-    first = true
     for (cat, _) in _jl_help_category_dict
         if ismatch(r, cat)
             println("Category: \"$cat\"")
-            first = false
         end
     end
     for (func, entries) in _jl_help_function_dict
         if ismatch(r, func) || anyp(e->ismatch(r,e), entries)
-            if !first
-                println()
+            for desc in entries
+                nl = search(desc,'\n')
+                if nl[1] != 0
+                    println(desc[1:(nl[1]-1)])
+                else
+                    println(desc)
+                end
             end
-            _jl_print_help_entries(entries)
-            first = false
             n+=1
         end
     end

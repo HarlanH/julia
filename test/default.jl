@@ -9,18 +9,15 @@ runtests("remote")
 
 # array/matrix tests
 runtests("arrayops")
-runtests("lapack")
-runtests("factorizations")
+runtests("linalg")
 runtests("fft")
 runtests("sparse")
-runtests("arpack")
 runtests("bitarray")
 
 # other tests
 runtests("random")
-runtests("special")
+runtests("math")
 runtests("functional")
 runtests("bigint")
-runtests("distributions")
 runtests("combinatorics")
 runtests("statistics")

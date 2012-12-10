@@ -47,8 +47,8 @@ jl_struct_type_t *jl_lambda_info_type;
 jl_struct_type_t *jl_module_type;
 jl_struct_type_t *jl_errorexception_type=NULL;
 jl_struct_type_t *jl_typeerror_type;
+jl_struct_type_t *jl_methoderror_type;
 jl_struct_type_t *jl_loaderror_type;
-jl_struct_type_t *jl_backtrace_type;
 jl_bits_type_t *jl_pointer_type;
 jl_value_t *jl_an_empty_cell=NULL;
 jl_value_t *jl_stackovf_exception;
@@ -58,6 +58,7 @@ jl_value_t *jl_overflow_exception;
 jl_value_t *jl_inexact_exception;
 jl_value_t *jl_undefref_exception;
 jl_value_t *jl_interrupt_exception;
+jl_value_t *jl_bounds_exception;
 jl_value_t *jl_memory_exception;
 
 jl_sym_t *call_sym;    jl_sym_t *dots_sym;
@@ -76,7 +77,7 @@ jl_sym_t *macro_sym;   jl_sym_t *method_sym;
 jl_sym_t *enter_sym;   jl_sym_t *leave_sym;
 jl_sym_t *exc_sym;     jl_sym_t *error_sym;
 jl_sym_t *static_typeof_sym;
-jl_sym_t *new_sym;
+jl_sym_t *new_sym;     jl_sym_t *using_sym;
 jl_sym_t *const_sym;   jl_sym_t *thunk_sym;
 jl_sym_t *anonymous_sym;  jl_sym_t *underscore_sym;
 jl_sym_t *abstracttype_sym; jl_sym_t *bitstype_sym;
@@ -148,6 +149,18 @@ jl_value_t *jl_get_nth_field(jl_value_t *v, size_t i)
     }
     return jl_new_bits((jl_bits_type_t*)jl_tupleref(st->types,i),
                        (char*)v + offs);
+}
+
+int jl_field_isdefined(jl_value_t *v, jl_sym_t *fld, int err)
+{
+    jl_struct_type_t *st = (jl_struct_type_t*)jl_typeof(v);
+    int i = jl_field_index(st, fld, err);
+    if (i == -1) return 0;
+    size_t offs = jl_field_offset(st,i) + sizeof(void*);
+    if (st->fields[i].isptr) {
+        return *(jl_value_t**)((char*)v + offs) != NULL;
+    }
+    return 1;
 }
 
 jl_value_t *jl_set_nth_field(jl_value_t *v, size_t i, jl_value_t *rhs)
@@ -311,6 +324,7 @@ jl_lambda_info_t *jl_new_lambda_info(jl_value_t *ast, jl_tuple_t *sparams)
     li->fptr = &jl_trampoline;
     li->roots = NULL;
     li->functionObject = NULL;
+    li->cFunctionObject = NULL;
     li->specTypes = NULL;
     li->inferred = 0;
     li->inInference = 0;
