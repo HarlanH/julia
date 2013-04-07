@@ -11,7 +11,7 @@ function list_all(T::Type, modules::Array{Module}, f::Function)
         sm = string(m)
         for s = names(m,true)
             try
-                t = eval(s)
+                t = eval(m,s)
                 if f(t)
                     a[string(s)] = t
                 end
@@ -40,7 +40,7 @@ extra = Dict{String, String}()
 function insert_type(m,s,x,ex)
     try
         ms = m[s]
-        add(ms, x)
+        add!(ms, x)
     catch
         m[s] = Set{String}(x)
     end
@@ -48,9 +48,7 @@ function insert_type(m,s,x,ex)
 end
 
 function add_type(x,t,sup)
-    if isa(t, AbstractKind) ||
-        isa(t, BitsKind) ||
-        isa(t, CompositeKind)
+    if isa(t, DataType)
         s = sup ? super(t) : t
         s_param = ""
         if x != string(t.name)
@@ -59,11 +57,11 @@ function add_type(x,t,sup)
             s_param *= " (=" * string(s.name) * "{" * join(s.parameters, ", ") * "})"
         end
         insert_type(children_map, string(s.name), x, s_param)
-    elseif isa(t, UnionKind)
+    elseif isa(t, UnionType)
         for c in t.types
             add_type(x, c, false)
         end
-        insert_type(children_map, "UnionKind", x, " = " * string(t))
+        insert_type(children_map, "UnionType", x, " = " * string(t))
     elseif isa(t, TypeConstructor)
         add_type(x, t.body, false)
         #println(typeof(t.body))
@@ -118,8 +116,8 @@ end
 show_tree(root) = show_tree(root, "", "")
 
 ## main ##
-all_types = list_all(Type, [Core, Base], (x)->isa(x, Type))
-children_map = Dict{String, Set{String}}(length(all_types))
+all_types = list_all(Type, [Core, Base, Main], (x)->isa(x, Type))
+children_map = Dict{String, Set{String}}()
 mk_tree()
 println("\n\nType Tree:")
 show_tree("Any") #todo: generalize this to be every item without a parent in all_types

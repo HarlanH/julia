@@ -58,7 +58,7 @@ numbers::
     julia> 3(2 - 5im)^2
     -63 - 60im
 
-    julia> 3(2 - 5im)^-1
+    julia> 3(2 - 5im)^-1.0
     0.20689655172413793 + 0.5172413793103449im
 
 The promotion mechanism ensures that combinations of operands of
@@ -132,13 +132,14 @@ defined for complex numbers::
     julia> sinh(1 + 2im)
     -0.48905625904129374 + 1.4031192506220407im
 
-Note that mathematical functions always return real values when applied
+Note that mathematical functions typically return real values when applied
 to real numbers and complex values when applied to complex numbers.
-Thus, ``sqrt``, for example, behaves differently when applied to ``-1``
+For example, ``sqrt``, for example, behaves differently when applied to ``-1``
 versus ``-1 + 0im`` even though ``-1 == -1 + 0im``::
 
     julia> sqrt(-1)
-    NaN
+    ERROR: DomainError()
+     in sqrt at math.jl:111
 
     julia> sqrt(-1 + 0im)
     0.0 + 1.0im
@@ -150,37 +151,25 @@ the multiplication operation will::
     julia> a = 1; b = 2; a + b*im
     1 + 2im
 
-Constructing complex numbers from variable values like this, however, is
-not recommended. Use the ``complex`` function to construct a complex
-value directly from its real and imaginary parts instead::
+Constructing complex numbers from variable values like this, however,
+is not recommended. Use the ``complex`` function to construct a
+complex value directly from its real and imaginary parts instead. This
+construction is preferred for variable arguments because it is more
+efficient than the multiplication and addition construct, but also
+because certain values of ``b`` can yield unexpected results::
 
     julia> complex(a,b)
     1 + 2im
 
-This construction is preferred for variable arguments because it is more
-efficient than the multiplication and addition construct, but also
-because certain values of ``b`` can yield unexpected results::
+``Inf`` and ``NaN`` propagate through complex numbers in the real
+and imaginary parts of a complex number as per IEEE-754 arithmetic::
 
     julia> 1 + Inf*im
-    NaN + Inf*im
-
-    julia> 1 + NaN*im
-    NaN + NaN*im
-
-These results are natural and unavoidable consequences of the
-interaction between the rules of complex multiplication and IEEE-754
-floating-point arithmetic. Using the ``complex`` function to construct
-complex values directly, however, gives more intuitive results::
-
-    julia> complex(1,Inf)
     complex(1.0,Inf)
 
-    julia> complex(1,NaN)
+    julia> 1 + NaN*im
     complex(1.0,NaN)
 
-On the other hand, it can be argued that these values do not represent
-meaningful complex numbers, and are thus not appreciably different from
-the results gotten when multiplying explicitly by ``im``.
 
 .. _man-rational-numbers:
 

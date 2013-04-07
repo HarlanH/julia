@@ -18,10 +18,10 @@ srand(1776)  # get more consistent times
 
 require("$JULIA_HOME/../../examples/list.jl")
 
-function listn1n2(n1::Int64,n2::Int64)
-    l1 = Nil{Int64}()
+function listn1n2(n1::Int,n2::Int)
+    l1 = Nil{Int}()
     for i=n2:-1:n1
-        l1 = Cons{Int64}(i,l1)
+        l1 = Cons{Int}(i,l1)
     end
     l1
 end
@@ -30,12 +30,12 @@ end
 gc()
 
 # issue #1211
-load("ziggurat")
+include("ziggurat.jl")
 a = Array(Float64, 1000000)
 @timeit randn_zig!(a) "randn_zig"
 
 # issue #950
-load("gk")
+include("gk.jl")
 @timeit gk(350,[0.1]) "gk      "
 
 # issue #942
@@ -51,24 +51,24 @@ x = 1:600000;
 @timeit sparse(x,x,x) "sparserang"
 
 # issue #445
-load("stockcorr")
+include("stockcorr.jl")
 @timeit stockcorr() "stockcorr"
 
-load("bench_eu")
+include("bench_eu.jl")
 @timeit bench_eu_vec(10000) "bench_eu_vec"
 @timeit bench_eu_devec(10000) "bench_eu_devec"
 
 # issue #1163
-load("actor_centrality")
+include("actor_centrality.jl")
 @timeit1 actor_centrality() "actorgraph"
 
 # issue #1168
-load("laplace")
+include("laplace.jl")
 @timeit1 laplace_vec() "laplace_vec"
 @timeit laplace_devec() "laplace_devec"
 
 # issue #1169
-load("go_benchmark")
+include("go_benchmark.jl")
 @timeit1 benchmark(10) "go_benchmark"
 
 function cmp_with_func(x::Vector, f::Function)
@@ -96,17 +96,22 @@ d = randn(len)
 
 @timeit (for n in 1:10; a = arith_vectorized(b,c,d); end) "vectoriz"
 
+open("random.csv","w") do io
+    writecsv(io, rand(100000,4))
+end
 
-function parse()
+function parsecsv()
     file = EachLine(open("random.csv"))
     for line in file
         line = split(line, ',')
     end
 end
 
-@timeit parse() "splitline"
+@timeit parsecsv() "splitline"
 
-load("json")
+rm("random.csv")
+
+include("json.jl")
 
 _json_data = "{\"web-app\": {
   \"servlet\": [   

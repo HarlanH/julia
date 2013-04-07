@@ -1,13 +1,16 @@
 /arpack-*
 /clang-*
 /Clp-*
+/clp-*
 /compiler-rt-*
 /double-conversion-*
 /dsfmt-*
 /fftw-*
-/glpk-*
+!fftw-config-nopthreads.patch
+/git-*
 /gmp-*
 /grisu-*
+/libgrisu.so
 /lapack-*
 /libunwind-*
 /lighttpd-*
@@ -17,6 +20,7 @@
 /pcre-*
 /readline-*
 /readline62-*
+!readline-win.h
 /root
 /SuiteSparse-*
 /zlib-*

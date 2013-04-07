@@ -112,7 +112,7 @@ function randn_zig()
     x = 0.0
 
     while (true)
-        U = randi(Uint32)
+        U = rand(Uint32)
         i = 1 + (U & 0x0000007F)     # 7 bit to choose the step
         sign = U & 0x00000080        # 1 bit for the sign
         j = U>>8                     # 24 bit for the x-value
@@ -139,7 +139,7 @@ end
 randn_zig(sigma::Number) = sigma*randn_zig()
 
 function randn_zig!(A::Array)
-    for i=1:numel(A)
+    for i=1:length(A)
         A[i] = randn_zig()
     end
     return A

@@ -12,10 +12,10 @@ library is implemented almost completely in Julia itself, and derives
 its performance from the compiler, just like any other code written in
 Julia.
 
-An array is a collection of objects stored in a multi-dimensional grid.
-In the most general case, an array may contain objects of type ``Any``.
-For most computational purposes, arrays should contain objects of a more
-specific type, such as ``Float64`` or ``Int32``.
+An array is a collection of objects stored in a multi-dimensional
+grid.  In the most general case, an array may contain objects of type
+``Any``.  For most computational purposes, arrays should contain
+objects of a more specific type, such as ``Float64`` or ``Int32``.
 
 In general, unlike many other technical computing languages, Julia does
 not expect programs to be written in a vectorized style for performance.
@@ -166,15 +166,20 @@ where each I\_k may be:
 1. A scalar value
 2. A ``Range`` of the form ``:``, ``a:b``, or ``a:b:c``
 3. An arbitrary integer vector, including the empty vector ``[]``
+4. A boolean vector
 
-The result X has the dimensions
-``(size(I_1), size(I_2), ..., size(I_n))``, with location
+The result X generally has dimensions
+``(length(I_1), length(I_2), ..., length(I_n))``, with location
 ``(i_1, i_2, ..., i_n)`` of X containing the value
-``A[I_1[i_1], I_2[i_2], ..., I_n[i_n]]``.
+``A[I_1[i_1], I_2[i_2], ..., I_n[i_n]]``. Trailing dimensions indexed with
+scalars are dropped. For example, the dimensions of ``A[I, 1]`` will be
+``(length(I),)``. The size of a dimension indexed by a boolean vector
+will be the number of true values in the vector (they behave as if they were
+transformed with ``find``).
 
-Indexing syntax is equivalent to a call to ``ref``::
+Indexing syntax is equivalent to a call to ``getindex``::
 
-    X = ref(A, I_1, I_2, ..., I_n)
+    X = getindex(A, I_1, I_2, ..., I_n)
 
 Example::
 
@@ -202,14 +207,15 @@ where each I\_k may be:
 1. A scalar value
 2. A ``Range`` of the form ``:``, ``a:b``, or ``a:b:c``
 3. An arbitrary integer vector, including the empty vector ``[]``
+4. A boolean vector
 
-The size of X should be ``(size(I_1), size(I_2), ..., size(I_n))``, and
+The size of X should be ``(length(I_1), length(I_2), ..., length(I_n))``, and
 the value in location ``(i_1, i_2, ..., i_n)`` of A is overwritten with
 the value ``X[I_1[i_1], I_2[i_2], ..., I_n[i_n]]``.
 
-Index assignment syntax is equivalent to a call to ``assign``::
+Index assignment syntax is equivalent to a call to ``setindex!``::
 
-      A = assign(A, X, I_1, I_2, ..., I_n)
+      A = setindex!(A, X, I_1, I_2, ..., I_n)
 
 Example::
 
@@ -239,7 +245,7 @@ syntax:
 
 Concatenation operators may also be used for concatenating arrays:
 
-1. ``[A B C...]`` — calls ``hcat``
+1. ``[A B C ...]`` — calls ``hcat``
 2. ``[A, B, C, ...]`` — calls ``vcat``
 3. ``[A B; C D; ...]`` — calls ``hvcat``
 
@@ -262,14 +268,48 @@ one of the inputs is a scalar.
     ``sec``, ``csc``, ``cot``, ``asec``, ``acsc``, ``acot``, ``sech``,
     ``csch``, ``coth``, ``asech``, ``acsch``, ``acoth``, ``sinc``,
     ``cosc``, ``hypot``
-7.  Logarithmic functions — ``log``, ``log2``, ``log10``, ``log1p``,
-    ``logb``, ``ilogb``
+7.  Logarithmic functions — ``log``, ``log2``, ``log10``, ``log1p``
 8.  Exponential functions — ``exp``, ``expm1``, ``exp2``, ``ldexp``
 9.  Rounding functions — ``ceil``, ``floor``, ``trunc``, ``round``,
     ``ipart``, ``fpart``
 10. Other mathematical functions — ``min``, ``max,`` ``abs``, ``pow``,
     ``sqrt``, ``cbrt``, ``erf``, ``erfc``, ``gamma``, ``lgamma``,
     ``real``, ``conj``, ``clamp``
+
+Broadcasting
+------------
+
+It is sometimes useful to perform element-by-element binary operations
+on arrays of different sizes, such as adding a vector to each column
+of a matrix.  An inefficient way to do this would be to replicate the
+vector to the size of the matrix::
+
+    julia> a = rand(2,1); A = rand(2,3);
+
+    julia> repmat(a,1,3)+A
+    2x3 Float64 Array:
+     0.848333  1.66714  1.3262 
+     1.26743   1.77988  1.13859
+
+This is wasteful when dimensions get large, so Julia offers the
+MATLAB-inspired ``bsxfun``, which expands singleton dimensions in
+array arguments to match the corresponding dimension in the other
+array without using extra memory, and applies the given binary
+function::
+
+    julia> bsxfun(+, a, A)
+    2x3 Float64 Array:
+     0.848333  1.66714  1.3262 
+     1.26743   1.77988  1.13859
+
+    julia> b = rand(1,2)
+    1x2 Float64 Array:
+     0.629799  0.754948
+
+    julia> bsxfun(+, a, b)
+    2x2 Float64 Array:
+     1.31849  1.44364
+     1.56107  1.68622
 
 Implementation
 --------------
@@ -293,9 +333,9 @@ generic manner for ``AbstractArray``.
 
 ``SubArray`` is a specialization of ``AbstractArray`` that performs
 indexing by reference rather than by copying. A ``SubArray`` is created
-with the ``sub`` function, which is called the same way as ``ref`` (with
+with the ``sub`` function, which is called the same way as ``getindex`` (with
 an array and a series of index arguments). The result of ``sub`` looks
-the same as the result of ``ref``, except the data is left in place.
+the same as the result of ``getindex``, except the data is left in place.
 ``sub`` stores the input index vectors in a ``SubArray`` object, which
 can later be used to index the original array indirectly.
 
@@ -309,27 +349,159 @@ of a larger array, without creating any temporaries, and by calling the
 appropriate LAPACK function with the right leading dimension size and
 stride parameters.
 
+.. code-block:: jlcon
+
+    julia> a = rand(10,10)
+    10x10 Float64 Array:
+     0.763921  0.884854   0.818783   0.519682   …  0.860332  0.882295   0.420202
+     0.190079  0.235315   0.0669517  0.020172      0.902405  0.0024219  0.24984
+     0.823817  0.0285394  0.390379   0.202234      0.516727  0.247442   0.308572
+     0.566851  0.622764   0.0683611  0.372167      0.280587  0.227102   0.145647
+     0.151173  0.179177   0.0510514  0.615746      0.322073  0.245435   0.976068
+     0.534307  0.493124   0.796481   0.0314695  …  0.843201  0.53461    0.910584
+     0.885078  0.891022   0.691548   0.547         0.727538  0.0218296  0.174351
+     0.123628  0.833214   0.0224507  0.806369      0.80163   0.457005   0.226993
+     0.362621  0.389317   0.702764   0.385856      0.155392  0.497805   0.430512
+     0.504046  0.532631   0.477461   0.225632      0.919701  0.0453513  0.505329
+    
+    julia> b = sub(a, 2:2:8,2:2:4)
+    4x2 SubArray of 10x10 Float64 Array:
+     0.235315  0.020172
+     0.622764  0.372167
+     0.493124  0.0314695
+     0.833214  0.806369
+    
+    julia> (q,r) = qr(b);
+    
+    julia> q
+    4x2 Float64 Array:
+     -0.200268   0.331205
+     -0.530012   0.107555
+     -0.41968    0.720129
+     -0.709119  -0.600124
+    
+    julia> r
+    2x2 Float64 Array:
+     -1.175  -0.786311
+      0.0    -0.414549
+
+******************
+ Sparse Matrices
+******************
+
+`Sparse matrices <http://en.wikipedia.org/wiki/Sparse_matrix>`_ are
+matrices that contain enough zeros that storing them in a special data
+structure leads to savings in space and execution time. Sparse
+matrices may be used when operations on the sparse representation of a
+matrix lead to considerable gains in either time or space when
+compared to performing the same operations on a dense matrix.
+
+Compressed Sparse Column (CSC) Storage
+--------------------------------------
+
+In julia, sparse matrices are stored in the `Compressed Sparse Column
+(CSC) format
+<http://en.wikipedia.org/wiki/Sparse_matrix#Compressed_sparse_column_.28CSC_or_CCS.29>`_. Julia
+sparse matrices have the type ``SparseMatrixCSC{Tv,Ti}``, where ``Tv``
+is the type of the nonzero values, and ``Ti`` is the integer type for
+storing column pointers and row indices. 
 ::
 
-    julia> a = rand(10,10);
+    type SparseMatrixCSC{Tv,Ti<:Integer} <: AbstractSparseMatrix{Tv,Ti}
+        m::Int                  # Number of rows
+        n::Int                  # Number of columns
+        colptr::Vector{Ti}      # Column i is in colptr[i]:(colptr[i+1]-1)
+        rowval::Vector{Ti}      # Row values of nonzeros
+        nzval::Vector{Tv}       # Nonzero values
+    end
 
-    julia> b = sub(a, 2:2:8,2:2:4)
-    4x2 SubArray of 10x10 Float64 Array
-    0.48291296659328276 0.31639301252254248
-    0.11191852765878418 0.80311033863988501
-    0.34377272170384798 0.12998312467801409
-    0.75207724893767547 0.48974544536835718
+The compressed sparse column storage makes it easy and quick to access
+the elements in the column of a sparse matrix, whereas accessing the
+sparse matrix by rows is considerably slower. Operations such as
+insertion of nonzero values one at a time in the CSC structure tend to
+be slow. This is because all elements of the sparse matrix that are
+beyond the point of insertion have to be moved one place over.
 
-    julia> (q,r) = qr(b);
+All operations on sparse matrices are carefully implemented to exploit
+the CSC data structure for performance, and to avoid expensive operations.
 
-    julia> q
-    4x2 Float64 Array
-    -0.31610281030340204 0.38994108897230212
-    -0.80237370921615103 -0.5848318975546335
-    -0.12986390146593485 0.36571345172816944
-    -0.48929624071011685 0.61005841520202764
+Sparse matrix constructors
+--------------------------
 
-    julia> r
-    2x2 Float64 Array
-    -1.00091806276211814 -0.65508286752651457
-    0.0 0.70738744643074303
+The simplest way to create sparse matrices are using functions
+equivalent to the ``zeros`` and ``eye`` functions that Julia provides
+for working with dense matrices. To produce sparse matrices instead,
+you can use the same names with an ``sp`` prefix:
+
+::
+
+    julia> spzeros(3,5)
+    3x5 sparse matrix with 0 nonzeros:
+
+    julia> speye(3,5)
+    3x5 sparse matrix with 3 nonzeros:
+        [1, 1]  =  1.0
+        [2, 2]  =  1.0
+        [3, 3]  =  1.0
+
+The ``sparse`` function is often a handy way to construct sparse
+matrices. It takes as its input a vector ``I`` of row indices, a
+vector ``J`` of column indices, and a vector ``V`` of nonzero
+values. ``sparse(I,J,V)`` constructs a sparse matrix such that
+``S[I[k], J[k]] = V[k]``.
+
+::
+
+    julia> I = [1, 4, 3, 5]; J = [4, 7, 18, 9]; V = [1, 2, -5, 3];
+
+    julia> sparse(I,J,V)
+    5x18 sparse matrix with 4 nonzeros:
+         [1 ,  4]  =  1
+         [4 ,  7]  =  2
+         [5 ,  9]  =  3
+         [3 , 18]  =  -5
+
+The inverse of the ``sparse`` function is ``findn``, which
+retrieves the inputs used to create the sparse matrix.
+
+::
+
+    julia> findn(S)
+    ([1, 4, 5, 3],[4, 7, 9, 18])
+
+    julia> findn_nzs(S)
+    ([1, 4, 5, 3],[4, 7, 9, 18],[1, 2, 3, -5])
+
+Another way to create sparse matrices is to convert a dense matrix
+into a sparse matrix using the ``sparse`` function:
+
+::
+
+    julia> sparse(eye(5))
+    5x5 sparse matrix with 5 nonzeros:
+        [1, 1]  =  1.0
+        [2, 2]  =  1.0
+        [3, 3]  =  1.0
+        [4, 4]  =  1.0
+        [5, 5]  =  1.0
+
+You can go in the other direction using the ``dense`` or the ``full``
+function. The ``issparse`` function can be used to query if a matrix
+is sparse.
+
+::
+
+    julia> issparse(speye(5))
+    true
+
+Sparse matrix operations
+------------------------
+
+Arithmetic operations on sparse matrices also work as they do on dense
+matrices. Indexing of, assignment into, and concatenation of sparse
+matrices work in the same way as dense matrices. Indexing operations,
+especially assignment, are expensive, when carried out one element at
+a time. In many cases it may be better to convert the sparse matrix
+into ``(I,J,V)`` format using ``find_nzs``, manipulate the nonzeros or
+the structure in the dense vectors ``(I,J,V)``, and then reconstruct
+the sparse matrix.

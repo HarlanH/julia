@@ -3,7 +3,7 @@
 #abstract Any <: Any
 #abstract Type{T}
 
-#abstract ...{T}
+#abstract Vararg{T}
 #Tuple = (Any...)
 
 #type Symbol
@@ -14,27 +14,21 @@
 #    name::Symbol
 #end
 
-#type AbstractKind <: Type
-#    name::TypeName
-#    super::Type
-#    parameters::Tuple
-#end
-
-#type CompositeKind <: Type
+#type DataType <: Type
 #    name::TypeName
 #    super::Type
 #    parameters::Tuple
 #    names::Tuple
 #    types::Tuple
+#    ctor
+#    instance
+#    size::Int32
+#    abstract::Bool
+#    mutable::Bool
+#    pointerfree::Bool
 #end
 
-#type BitsKind <: Type
-#    name::TypeName
-#    super::Type
-#    parameters::Tuple
-#end
-
-#type UnionKind <: Type
+#type UnionType <: Type
 #    types::Tuple
 #end
 
@@ -109,7 +103,7 @@
 # type Task
 #     parent::Task
 #     last::Task
-#     tls::Any
+#     storage::Any
 #     consumers
 #     done::Bool
 #     runnable::Bool
@@ -118,43 +112,52 @@
 import Main
 import Intrinsics.ccall
 
-export ..., ANY, ASCIIString, AbstractArray, AbstractKind, Any, Array,
-    BitsKind, Bool, BoundsError, Box, ByteString, Char, CompositeKind,
-    Main, DirectIndexString, DivideByZeroError, DomainError, EOFError,
-    Exception, Expr, FloatingPoint, Float32, Float64, Function, GotoNode, IOError,
-    InexactError, Integer, Int, Int8, Int16, Int32, Int64, Int128,
-    InterruptException,
-    IntrinsicFunction, LabelNode, LambdaStaticData, LineNumberNode,
-    MemoryError, Method, MethodTable, Module, NTuple, None, Nothing, Number,
-    OverflowError, Ptr, QuoteNode, Real, Signed, StackOverflowError, String,
-    Symbol, SymbolNode, Task, Top, TopNode, Tuple, Type, TypeConstructor,
-    TypeName, TypeVar, UTF8String, Uint, Uint8, Uint16, Uint32, Uint64, Uint128,
-    UndefRefError, Union, UnionKind, Unsigned, Void,
+export
+    # key types
+    Any, DataType, Vararg, ANY, NTuple, None, Top,
+    Tuple, Type, TypeConstructor, TypeName, TypeVar, Union, UnionType, Void,
+    AbstractArray,
+    # special objects
+    Box, Function, IntrinsicFunction, LambdaStaticData, Method, MethodTable,
+    Module, Nothing, Symbol, Task, Array,
+    # numeric types
+    Bool, FloatingPoint, Float32, Float64, Number, Integer, Int, Int8, Int16,
+    Int32, Int64, Int128, Ptr, Real, Signed, Uint, Uint8, Uint16, Uint32,
+    Uint64, Uint128, Unsigned,
+    # string types
+    Char, ASCIIString, ByteString, DirectIndexString, String, UTF8String,
+    # errors
+    BoundsError, DivideByZeroError, DomainError, Exception,
+    InexactError, InterruptException, MemoryError, OverflowError,
+    StackOverflowError, UndefRefError,
+    # AST representation
+    Expr, GotoNode, LabelNode, LineNumberNode, QuoteNode, SymbolNode, TopNode,
     GetfieldNode,
-    # functions
-    setfield, applicable, apply, apply_type, arraylen, arrayref, arrayset,
-    arraysize, convert_default, convert_tuple, fieldtype, getfield,
-    include, invoke, is, ===, isa, isdefined, method_exists,
-    subtype, throw, tuple, tuplelen, tupleref, typeassert, typeof, yieldto,
+    # object model functions
+    apply, arraylen, arrayref, arrayset, arraysize, fieldtype, getfield,
+    setfield, yieldto, throw, tuple, tuplelen, tupleref, is, ===, isdefined,
+    convert_default, convert_tuple, kwcall,
+    # type reflection
+    subtype, typeassert, typeof, apply_type, isa,
+    # method reflection
+    applicable, invoke, method_exists,
     # constants
-    JULIA_HOME, nothing,
+    JULIA_HOME, nothing, Main,
     # intrinsics module
     Intrinsics
     #ccall, abs_float, add_float, add_int, and_int, ashr_int,
-    #box, bswap_int, checked_fptosi32,
-    #checked_fptosi64, checked_fptoui32, checked_fptoui64, checked_sadd,
+    #box, bswap_int, checked_fptosi, checked_fptoui, checked_sadd,
     #checked_smul, checked_ssub, checked_uadd, checked_umul, checked_usub,
-    #copysign_float, ctlz_int, ctpop_int, cttz_int,
+    #nan_dom_err, copysign_float, ctlz_int, ctpop_int, cttz_int,
     #div_float, eq_float, eq_int, eqfsi64, eqfui64, flipsign_int,
     #fpext64, fpiseq32, fpiseq64, fpislt32, fpislt64,
     #fpsiround32, fpsiround64, fptosi32, fptosi64, fptoui32, fptoui64,
     #fptrunc32, fpuiround32, fpuiround64, le_float, lefsi64, lefui64, lesif64,
     #leuif64, lshr_int, lt_float, ltfsi64, ltfui64, ltsif64, ltuif64, mul_float,
     #mul_int, ne_float, ne_int, neg_float, neg_int, not_int, or_int, rem_float,
-    #sdiv_int, sext16, sext32, sext64, shl_int, sitofp32, sitofp64, sle_int,
-    #slt_int, smod_int, srem_int, sub_float, sub_int, trunc16, trunc32,
-    #trunc64, trunc8, trunc_int, udiv_int, uitofp32, uitofp64, ule_int, ult_int,
-    #unbox, urem_int, xor_int, zext16, zext32, zext64, sext_int, zext_int
+    #sdiv_int, shl_int, sitofp32, sitofp64, sle_int, slt_int, smod_int,
+    #srem_int, sub_float, sub_int, trunc_int, udiv_int, uitofp32, uitofp64,
+    #ule_int, ult_int, unbox, urem_int, xor_int, sext_int, zext_int
 
 
 type Nothing; end
@@ -200,9 +203,7 @@ type DomainError        <: Exception end
 type OverflowError      <: Exception end
 type InexactError       <: Exception end
 type MemoryError        <: Exception end
-type IOError            <: Exception end
 type StackOverflowError <: Exception end
-type EOFError           <: Exception end
 type UndefRefError      <: Exception end
 type InterruptException <: Exception end
 
@@ -224,11 +225,11 @@ type GetfieldNode
     typ
 end
 
-type ASCIIString <: DirectIndexString
+immutable ASCIIString <: DirectIndexString
     data::Array{Uint8,1}
 end
 
-type UTF8String <: String
+immutable UTF8String <: String
     data::Array{Uint8,1}
 end
 

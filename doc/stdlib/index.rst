@@ -16,31 +16,19 @@ Built-ins
    :maxdepth: 1
 
    base
-
-******
-Extras
-******
-
-.. toctree::
-   :maxdepth: 1
-
-   profile
-   options
-   cpp
-   textwrap
-   zlib
-   strpack
-   sound
-   argparse
-   gzip
+   sparse
+   linalg
+   constants
+   file
+   punctuation
 
 ****************
-Math & Numerical
+Built-in Modules
 ****************
 
 .. toctree::
    :maxdepth: 1
 
-   blas
-   glpk
+   sort
+
 

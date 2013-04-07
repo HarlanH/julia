@@ -69,6 +69,26 @@ Here, we happened to know that the first element of ``a`` would be an
 will raise a run-time error if the value is not of the expected type,
 potentially catching certain bugs earlier.
 
+Declare types of named arguments
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Named arguments can have declared types::
+
+    function with_named(x; name::Int = 1)
+        ...
+    end
+
+Functions are specialized on the types of named arguments, so these
+declarations will not affect performance of code inside the function.
+However, they will reduce the overhead of calls to the function that
+include named arguments.
+
+Functions with named arguments have near-zero overhead for call sites
+that pass only positional arguments.
+
+Passing dynamic lists of named arguments, as in ``f(x; names...)``,
+can be slow and should be avoided in performance-sensitive code.
+
 Break functions into multiple definitions
 -----------------------------------------
 
@@ -156,7 +176,7 @@ randomly-chosen type::
 This should be written as::
 
     function fill_twos!(a)
-        for i=1:numel(a)
+        for i=1:length(a)
             a[i] = 2
         end
     end
@@ -177,7 +197,7 @@ The second form is also often better style and can lead to more code
 reuse.
 
 This pattern is used in several places in the standard library. For
-example, see ``_jl_hvcat_fill`` in
+example, see ``hvcat_fill`` in
 `abstractarray.jl <https://github.com/JuliaLang/julia/blob/master/base/abstractarray.jl>`_,
 or the ``fill!`` function, which we could have used instead of writing
 our own ``fill_twos!``.

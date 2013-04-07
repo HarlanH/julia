@@ -1,7 +1,8 @@
 ## time-related functions ##
 
 # TODO: check for usleep errors?
-sleep(s::Real) = ccall(:usleep, Int32, (Uint32,), uint32(iround(s*1e6)))
+@unix_only systemsleep(s::Real) = ccall(:usleep, Int32, (Uint32,), uint32(iround(s*1e6)))
+@windows_only systemsleep(s::Real) = (ccall(:Sleep, stdcall, Void, (Uint32,), uint32(iround(s*1e3))); return int32(0))
 
 strftime(t) = strftime("%c", t)
 function strftime(fmt::ByteString, t)
@@ -29,14 +30,17 @@ end
 
 ## process-related functions ##
 
-getpid() = int(ccall(:getpid, Int32, ()))
-system(cmd::String) = int(ccall(:system, Int32, (Ptr{Uint8},), cmd))
+getpid() = ccall(:jl_getpid, Int32, ())
 
 ## network functions ##
 
 function gethostname()
-    hn = Array(Uint8, 128)
-    ccall(:gethostname, Int32, (Ptr{Uint8}, Uint), hn, length(hn))
+    hn = Array(Uint8, 256)
+    @unix_only err=ccall(:gethostname, Int32, (Ptr{Uint8}, Uint), hn, length(hn))
+    @windows_only err=ccall(:gethostname, stdcall, Int32, (Ptr{Uint8}, Uint32), hn, length(hn))
+    if err != 0
+        error("gethostname")
+    end
     bytestring(convert(Ptr{Uint8},hn))
 end
 
@@ -46,10 +50,7 @@ function getipaddr()
     bytestring(convert(Ptr{Uint8},ip))
 end
 
-## get a temporary file name ##
-
-tmpnam() = bytestring(ccall(:tmpnam, Ptr{Uint8}, (Ptr{Uint8},), C_NULL))
-
 ## Memory related ##
 
 c_free(p::Ptr) = ccall(:free, Void, (Ptr{Void},), p)
+c_malloc(size::Integer) = ccall(:malloc, Ptr{Void}, (Int,), size)

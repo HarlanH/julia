@@ -1,35 +1,37 @@
 # formerly built-in methods. can be replaced any time.
 
-show(x) = show(OUTPUT_STREAM::IOStream, x)
+show(x) = show(OUTPUT_STREAM::IO, x)
 
-print(io::IOStream, s::Symbol) = ccall(:jl_print_symbol, Void, (Ptr{Void}, Any,), io, s)
-show(io, x) = ccall(:jl_show_any, Void, (Any, Any,), io::IOStream, x)
+print(io::IO, s::Symbol) = ccall(:jl_print_symbol, Void, (Ptr{Void}, Any,), io, s)
+show(io::IO, x::ANY) = ccall(:jl_show_any, Void, (Any, Any,), io, x)
 
-showcompact(io, x) = show(io, x)
-showcompact(x)     = showcompact(OUTPUT_STREAM::IOStream, x)
+showcompact(io::IO, x) = show(io, x)
+showcompact(x) = showcompact(OUTPUT_STREAM::IO, x)
 
-macro show(ex)
-    quote
-        print($(sprint(show_unquoted, ex)*"\t= "))
-        show($(esc(ex)))
-        println()
+macro show(exs...)
+    blk = Expr(:block)
+    for ex in exs
+        push!(blk.args, :(println($(sprint(show_unquoted,ex)*" => "),
+                                 repr(begin value=$(esc(ex)) end))))
     end
+    if !isempty(exs); push!(blk.args, :value); end
+    return blk
 end
 
-show(io, s::Symbol) = show_indented(io, s)
-show(io, tn::TypeName) = print(io, tn.name)
-show(io, ::Nothing) = print(io, "nothing")
-show(io, b::Bool) = print(io, b ? "true" : "false")
-show(io, n::Signed) = (write(io, dec(n)); nothing)
-show(io, n::Unsigned) = print(io, "0x", hex(n,sizeof(n)<<1))
+show(io::IO, s::Symbol) = show_indented(io, s)
+show(io::IO, tn::TypeName) = print(io, tn.name)
+show(io::IO, ::Nothing) = print(io, "nothing")
+show(io::IO, b::Bool) = print(io, b ? "true" : "false")
+show(io::IO, n::Signed) = (write(io, dec(n)); nothing)
+show(io::IO, n::Unsigned) = print(io, "0x", hex(n,sizeof(n)<<1))
 
-show{T}(io, p::Ptr{T}) =
+show{T}(io::IO, p::Ptr{T}) =
     print(io, is(T,None) ? "Ptr{Void}" : typeof(p), " @0x$(hex(unsigned(p), WORD_SIZE>>2))")
 
 full_name(m::Module) = m===Main ? () : tuple(full_name(module_parent(m))...,
                                              module_name(m))
 
-function show(io, m::Module)
+function show(io::IO, m::Module)
     if is(m,Main)
         print(io, "Main")
     else
@@ -37,13 +39,20 @@ function show(io, m::Module)
     end
 end
 
-function show(io, l::LambdaStaticData)
+uncompress_ast(l::LambdaStaticData) = ccall(:jl_uncompress_ast, Any, (Any,Any), l, l.ast)
+
+function show(io::IO, l::LambdaStaticData)
     print(io, "AST(")
-    show(io, l.ast)
+    if isa(l.ast,Expr)
+        show(io, l.ast)
+    else
+        ast = uncompress_ast(l)
+        show(io, ast)
+    end
     print(io, ")")
 end
 
-function show_delim_array(io, itr, op, delim, cl, delim_one)
+function show_delim_array(io::IO, itr, op, delim, cl, delim_one)
     print(io, op)
     state = start(itr)
     newline = true
@@ -51,7 +60,7 @@ function show_delim_array(io, itr, op, delim, cl, delim_one)
     if !done(itr,state)
 	while true
 	    x, state = next(itr,state)
-            multiline = isa(x,AbstractArray) && ndims(x)>1 && numel(x)>0
+            multiline = isa(x,AbstractArray) && ndims(x)>1 && length(x)>0
             if newline
                 if multiline; println(io); end
             end
@@ -74,8 +83,8 @@ function show_delim_array(io, itr, op, delim, cl, delim_one)
     print(io, cl)
 end
 
-show_comma_array(io, itr, o, c) = show_delim_array(io, itr, o, ',', c, false)
-show(io, t::Tuple) = show_delim_array(io, t, '(', ',', ')', true)
+show_comma_array(io::IO, itr, o, c) = show_delim_array(io, itr, o, ',', c, false)
+show(io::IO, t::Tuple) = show_delim_array(io, t, '(', ',', ')', true)
 
 ## AST decoding helpers ##
 
@@ -136,9 +145,9 @@ function show_indented(io::IO, sym::Symbol, indent::Int)
     end
 end
 function default_show_quoted(io::IO, ex, indent::Int)
-    print(io, ":( ")
+    print(io, ":(")
     show_unquoted(io, ex, indent + indent_width)
-    print(io, " )")
+    print(io, ")")
 end
 
 ## AST printing helpers ##
@@ -157,8 +166,8 @@ function show_expr_type(io::IO, ty)
     end
 end
 
-show_linenumber(io::IO, line)       = print(io,"\t#  line ",line,':')
-show_linenumber(io::IO, line, file) = print(io,"\t#  ",file,", line ",line,':')
+show_linenumber(io::IO, line)       = print(io," # line ",line,':')
+show_linenumber(io::IO, line, file) = print(io," # ",file,", line ",line,':')
 
 # show a block, e g if/for/etc
 function show_block(io::IO, head, args::Vector, body, indent::Int)
@@ -197,6 +206,7 @@ end
 show_unquoted(io::IO, sym::Symbol, indent::Int) = print(io, sym)
 show_unquoted(io::IO, x::Number, indent::Int)   = show(io, x)
 show_unquoted(io::IO, x::String, indent::Int)   = show(io, x)
+show_unquoted(io::IO, x::Char, indent::Int)     = show(io, x)
 
 const _expr_infix_wide = Set(:(=), :(+=), :(-=), :(*=), :(/=), :(\=), :(&=), 
     :(|=), :($=), :(>>>=), :(>>=), :(<<=), :(&&), :(||))
@@ -227,13 +237,13 @@ function show_unquoted(io::IO, ex::Expr, indent::Int)
     elseif has(_expr_parens, head)               # :tuple/:vcat/:cell1d
         op, cl = _expr_parens[head]
         print(io, op)
-        show_list(io, args, ", ", indent)
+        show_list(io, args, ",", indent)
         if is(head, :tuple) && nargs == 1; print(io, ','); end
         print(io, cl)
     elseif has(_expr_calls, head) && nargs >= 1  # :call/:ref/:curly
         op, cl = _expr_calls[head]
         show_unquoted(io, args[1], indent)
-        show_enclosed_list(io, op, args[2:end], ", ", cl, indent)
+        show_enclosed_list(io, op, args[2:end], ",", cl, indent)
     elseif is(head, :comparison) && nargs >= 3 && (nargs&1==1)
         show_enclosed_list(io, '(', args, "", ')', indent)
     elseif is(head, :(...)) && nargs == 1
@@ -242,7 +252,7 @@ function show_unquoted(io::IO, ex::Expr, indent::Int)
     elseif (nargs == 1 && contains((:return, :abstract, :const), head)) ||
                           contains((:local,  :global), head)
         print(io, head, ' ')
-        show_list(io, args, ", ", indent)
+        show_list(io, args, ",", indent)
     elseif is(head, :macrocall) && nargs >= 1
         show_list(io, args, ' ', indent)
     elseif is(head, :typealias) && nargs == 2
@@ -276,7 +286,7 @@ function show_unquoted(io::IO, ex::Expr, indent::Int)
     elseif is(head, :null)
         print(io, "nothing")
     else
-        print(io, "\$(expr(")
+        print(io, "\$(Expr(")
         show_indented(io, ex.head, indent)
         for arg in args
             print(io, ", ")
@@ -299,65 +309,30 @@ function show_unquoted(io::IO, ex::SymbolNode)
     show_expr_type(io, ex.typ)
 end
 
-
-function show(io, e::TypeError)
-    ctx = isempty(e.context) ? "" : "in $(e.context), "
-    if e.expected === Bool
-        print(io, "type error: non-boolean ($(typeof(e.got))) ",
-                  "used in boolean context")
-    elseif e.expected === Function && e.func === :apply && isa(e.got,AbstractKind)
-        print(io, "type error: cannot instantiate abstract type $(e.got.name)")
-    else
-        if isa(e.got,Type)
-            tstr = "Type{$(e.got)}"
-        else
-            tstr = string(typeof(e.got))
-        end
-        print(io, "type error: $(e.func): ",
-                  "$(ctx)expected $(e.expected), ",
-                  "got $tstr")
+function clean_gensym(s::Symbol)
+    s = string(s)
+    i = search(s,'#')
+    if i > 0
+        return s[1:i-1]
     end
+    return s
 end
 
-show(io, e::LoadError) = (show(io, e.error); print(io, "\nat $(e.file):$(e.line)"))
-show(io, e::SystemError) = print(io, "$(e.prefix): $(strerror(e.errnum))")
-show(io, ::DivideByZeroError) = print(io, "error: integer divide by zero")
-show(io, ::StackOverflowError) = print(io, "error: stack overflow")
-show(io, ::UndefRefError) = print(io, "access to undefined reference")
-show(io, ::EOFError) = print(io, "read: end of file")
-show(io, e::ErrorException) = print(io, e.msg)
-show(io, e::KeyError) = print(io, "key not found: $(e.key)")
-show(io, e::InterruptException) = nothing
-
-function show(io, e::MethodError)
-    name = e.f.env.name
-    if is(e.f,convert)
-        print(io, "no method $(name)(Type{$(e.args[1])},$(typeof(e.args[2])))")
-    else
-        print(io, "no method $(name)$(typeof(e.args))")
+function argtype_decl_string(n, t)
+    if isa(n,Expr)
+        n = n.args[1]  # handle n::T in arg list
     end
+    n = clean_gensym(n)
+    if t === Any
+        return n
+    end
+    if t <: Vararg && t.parameters[1] === Any
+        return string(n, "...")
+    end
+    return string(n, "::", t)
 end
 
-function show(io, bt::BackTrace)
-    show(io, bt.e)
-    t = bt.trace
-    # we may not declare :_jl_eval_user_input
-    # directly so that we get a compile error
-    # in case its name changes in the future
-    const _jl_eval_function = symbol(string(_jl_eval_user_input))
-    for i = 1:3:length(t)
-        if i == 1 && t[i] == :error; continue; end
-        if t[i] == _jl_eval_function; break; end
-        print(io, "\n")
-        lno = t[i+2]
-        print(io, " in ", t[i], " at ", t[i+1])
-        if lno >= 1
-            print(io, ":", lno)
-        end
-    end
-end
-
-function show(io, m::Method)
+function show(io::IO, m::Method)
     tv = m.tvars
     if !isa(tv,Tuple)
         tv = (tv,)
@@ -365,16 +340,24 @@ function show(io, m::Method)
     if !isempty(tv)
         show_delim_array(io, tv, '{', ',', '}', false)
     end
-    show(io, m.sig)
     li = m.func.code
+    e = li.ast
+    if !isa(e,Expr)
+        e = uncompress_ast(li)
+    end
+    argnames = e.args[1]
+    decls = map(argtype_decl_string, argnames, {m.sig...})
+    print(io, "(")
+    print_joined(io, decls, ",", ",")
+    print(io, ")")
     if li.line > 0
         print(io, " at ", li.file, ":", li.line)
     end
 end
 
-function show(io, mt::MethodTable)
+function show(io::IO, mt::MethodTable)
     name = mt.name
-    println(io, "Methods for generic function ", name)
+    println(io, "# methods for generic function ", name)
     d = mt.defs
     while !is(d,())
         print(io, name)
@@ -386,9 +369,9 @@ function show(io, mt::MethodTable)
     end
 end
 
-# dump & idump - structured tree representation like R's str()
+# dump & xdump - structured tree representation like R's str()
 # - dump is for the user-facing structure
-# - idump is for the internal structure
+# - xdump is for the internal structure
 #
 # x is the object
 # n is the depth of traversal in nested types (5 is the default)
@@ -400,18 +383,18 @@ end
 # n > 0, dump each component. Limit to the first 10 entries. When
 # dumping components, decrement n, and add two spaces to indent.
 #
-# Package writers should not overload idump.
+# Package writers should not overload xdump.
 
-function idump(fn::Function, io::IOStream, x, n::Int, indent)
+function xdump(fn::Function, io::IO, x, n::Int, indent)
     T = typeof(x)
     print(io, T, " ")
-    if isa(T, CompositeKind)
+    if isa(T, DataType)
         println(io)
         if n > 0
             for field in T.names
                 if field != symbol("")    # prevents segfault if symbol is blank
                     print(io, indent, "  ", field, ": ")
-                    fn(io, getfield(x, field), n - 1, strcat(indent, "  "))
+                    fn(io, getfield(x, field), n - 1, string(indent, "  "))
                 end
             end
         end
@@ -419,36 +402,40 @@ function idump(fn::Function, io::IOStream, x, n::Int, indent)
         println(io, x)
     end
 end
-function idump(fn::Function, io::IOStream, x::Array{Any}, n::Int, indent)
+function xdump(fn::Function, io::IO, x::Module, n::Int, indent)
+    print(io, Module, " ")
+    println(io, x)
+end
+function xdump(fn::Function, io::IO, x::Array{Any}, n::Int, indent)
     println("Array($(eltype(x)),$(size(x)))")
     if n > 0
         for i in 1:(length(x) <= 10 ? length(x) : 5)
             print(io, indent, "  ", i, ": ")
-            fn(io, x[i], n - 1, strcat(indent, "  "))
+            fn(io, x[i], n - 1, string(indent, "  "))
         end
         if length(x) > 10
             println(io, indent, "  ...")
             for i in length(x)-4:length(x)
                 print(io, indent, "  ", i, ": ")
-                fn(io, x[i], n - 1, strcat(indent, "  "))
+                fn(io, x[i], n - 1, string(indent, "  "))
             end
         end
     end
 end
-idump(fn::Function, io::IOStream, x::Symbol, n::Int, indent) = println(io, typeof(x), " ", x)
-idump(fn::Function, io::IOStream, x::Function, n::Int, indent) = println(io, x)
-idump(fn::Function, io::IOStream, x::Array, n::Int, indent) = println(io, "Array($(eltype(x)),$(size(x)))", " ", x)
+xdump(fn::Function, io::IO, x::Symbol, n::Int, indent) = println(io, typeof(x), " ", x)
+xdump(fn::Function, io::IO, x::Function, n::Int, indent) = println(io, x)
+xdump(fn::Function, io::IO, x::Array, n::Int, indent) = println(io, "Array($(eltype(x)),$(size(x)))", " ", x)
 
 # Types
-idump(fn::Function, io::IOStream, x::UnionKind, n::Int, indent) = println(io, x)
-function idump(fn::Function, io::IOStream, x::CompositeKind, n::Int, indent)
+xdump(fn::Function, io::IO, x::UnionType, n::Int, indent) = println(io, x)
+function xdump(fn::Function, io::IO, x::DataType, n::Int, indent)
     println(io, x, "::", typeof(x), " ", " <: ", super(x))
     if n > 0
         for idx in 1:min(10,length(x.names))
             if x.names[idx] != symbol("")    # prevents segfault if symbol is blank
                 print(io, indent, "  ", x.names[idx], "::")
-                if isa(x.types[idx], CompositeKind) 
-                    idump(fn, io, x.types[idx], n - 1, strcat(indent, "  "))
+                if isa(x.types[idx], DataType)
+                    xdump(fn, io, x.types[idx], n - 1, string(indent, "  "))
                 else
                     println(x.types[idx])
                 end
@@ -460,10 +447,10 @@ function idump(fn::Function, io::IOStream, x::CompositeKind, n::Int, indent)
     end
 end
 
-# _jl_dumptype is for displaying abstract type hierarchies like Jameson
+# dumptype is for displaying abstract type hierarchies like Jameson
 # Nash's wiki page: https://github.com/JuliaLang/julia/wiki/Types-Hierarchy
 
-function _jl_dumptype(io::IOStream, x::Type, n::Int, indent)
+function dumptype(io::IO, x, n::Int, indent)
     # based on Jameson Nash's examples/typetree.jl
     println(io, x)
     if n == 0   # too deeply nested
@@ -484,17 +471,17 @@ function _jl_dumptype(io::IOStream, x::Type, n::Int, indent)
                                 length(t.parameters) > 0 ? "{$targs}" : "",
                                 " = ", t)
                     end
-                elseif isa(t, UnionKind)
-                    if any(map(tt -> string(x.name) == typargs(tt), t.types))
+                elseif isa(t, UnionType)
+                    if any(tt -> string(x.name) == typargs(tt), t.types)
                         println(io, indent, "  ", s, " = ", t)
                     end
-                elseif isa(t, Type) && super(t).name == x.name
+                elseif isa(t, DataType) && super(t).name == x.name
                     # type aliases
                     if string(s) != string(t.name)
                         println(io, indent, "  ", s, " = ", t.name)
                     elseif t != Any 
                         print(io, indent, "  ")
-                        _jl_dumptype(io, t, n - 1, strcat(indent, "  "))
+                        dump(io, t, n - 1, string(indent, "  "))
                     end
                 end
             end
@@ -504,31 +491,31 @@ end
 
 # For abstract types, use _dumptype only if it's a form that will be called
 # interactively.
-idump(fn::Function, io::IOStream, x::AbstractKind) = _jl_dumptype(io, x, 5, "")
-idump(fn::Function, io::IOStream, x::AbstractKind, n::Int) = _jl_dumptype(io, x, n, "")
+xdump(fn::Function, io::IO, x::DataType) = x.abstract ? dumptype(io, x, 5, "") : xdump(fn, io, x, 5, "")
+xdump(fn::Function, io::IO, x::DataType, n::Int) = x.abstract ? dumptype(io, x, n, "") : xdump(fn, io, x, n, "")
 
 # defaults:
-idump(fn::Function, io::IOStream, x) = idump(idump, io, x, 5, "")  # default is 5 levels
-idump(fn::Function, io::IOStream, x, n::Int) = idump(idump, io, x, n, "")
-idump(fn::Function, args...) = idump(fn, OUTPUT_STREAM::IOStream, args...)
-idump(io::IOStream, args...) = idump(idump, io, args...)
-idump(args...) = idump(idump, OUTPUT_STREAM::IOStream, args...)
+xdump(fn::Function, io::IO, x) = xdump(xdump, io, x, 5, "")  # default is 5 levels
+xdump(fn::Function, io::IO, x, n::Int) = xdump(xdump, io, x, n, "")
+xdump(fn::Function, args...) = xdump(fn, OUTPUT_STREAM::IO, args...)
+xdump(io::IO, args...) = xdump(xdump, io, args...)
+xdump(args...) = xdump(xdump, OUTPUT_STREAM::IO, args...)
 
 
 # Here are methods specifically for dump:
-dump(io::IOStream, x, n::Int) = dump(io, x, n, "")
-dump(io::IOStream, x) = dump(io, x, 5, "")  # default is 5 levels
-dump(args...) = dump(OUTPUT_STREAM::IOStream, args...)
-dump(io::IOStream, x::String, n::Int, indent) = println(io, typeof(x), " \"", x, "\"")
-dump(io::IOStream, x, n::Int, indent) = idump(dump, io, x, n, indent)
+dump(io::IO, x, n::Int) = dump(io, x, n, "")
+dump(io::IO, x) = dump(io, x, 5, "")  # default is 5 levels
+dump(args...) = dump(OUTPUT_STREAM::IO, args...)
+dump(io::IO, x::String, n::Int, indent) = println(io, typeof(x), " \"", x, "\"")
+dump(io::IO, x, n::Int, indent) = xdump(dump, io, x, n, indent)
 
-function dump(io::IOStream, x::Dict, n::Int, indent)
+function dump(io::IO, x::Dict, n::Int, indent)
     println(typeof(x), " len ", length(x))
     if n > 0
         i = 1
         for (k,v) in x
             print(io, indent, "  ", k, ": ")
-            dump(io, v, n - 1, strcat(indent, "  "))
+            dump(io, v, n - 1, string(indent, "  "))
             if i > 10
                 println(io, indent, "  ...")
                 break
@@ -539,16 +526,15 @@ function dump(io::IOStream, x::Dict, n::Int, indent)
 end
 
 # More generic representation for common types:
-dump(io::IOStream, x::AbstractKind, n::Int, indent) = println(io, x.name)
-dump(io::IOStream, x::AbstractKind) = _jl_dumptype(io, x, 5, "")
-dump(io::IOStream, x::AbstractKind, n::Int) = _jl_dumptype(io, x, n, "")
-dump(io::IOStream, x::BitsKind, n::Int, indent) = println(io, x.name)
-dump(io::IOStream, x::TypeVar, n::Int, indent) = println(io, x.name)
+dump(io::IO, x::DataType, n::Int, indent) = println(io, x.name)
+dump(io::IO, x::DataType, n::Int) = dump(io, x, n, "")
+dump(io::IO, x::DataType) = dump(io, x, 5, "")
+dump(io::IO, x::TypeVar, n::Int, indent) = println(io, x.name)
 
 
-showall(x) = showall(OUTPUT_STREAM::IOStream, x)
+showall(x) = showall(OUTPUT_STREAM::IO, x)
 
-function showall{T}(io, a::AbstractArray{T,1})
+function showall{T}(io::IO, a::AbstractArray{T,1})
     if is(T,Any)
         opn = '{'; cls = '}'
     else
@@ -557,27 +543,27 @@ function showall{T}(io, a::AbstractArray{T,1})
     show_comma_array(io, a, opn, cls)
 end
 
-alignment(x::Any) = (0, strlen(sprint(showcompact, x)))
-alignment(x::Number) = (strlen(sprint(showcompact, x)), 0)
-alignment(x::Integer) = (strlen(sprint(showcompact, x)), 0)
+alignment(x::Any) = (0, length(sprint(showcompact, x)))
+alignment(x::Number) = (length(sprint(showcompact, x)), 0)
+alignment(x::Integer) = (length(sprint(showcompact, x)), 0)
 function alignment(x::Real)
     m = match(r"^(.*?)((?:[\.eE].*)?)$", sprint(showcompact, x))
-    m == nothing ? (strlen(sprint(showcompact, x)), 0) :
-                   (strlen(m.captures[1]), strlen(m.captures[2]))
+    m == nothing ? (length(sprint(showcompact, x)), 0) :
+                   (length(m.captures[1]), length(m.captures[2]))
 end
 function alignment(x::Complex)
     m = match(r"^(.*,)(.*)$", sprint(showcompact, x))
-    m == nothing ? (strlen(sprint(showcompact, x)), 0) :
-                   (strlen(m.captures[1]), strlen(m.captures[2]))
+    m == nothing ? (length(sprint(showcompact, x)), 0) :
+                   (length(m.captures[1]), length(m.captures[2]))
 end
 function alignment(x::Rational)
     m = match(r"^(.*?/)(/.*)$", sprint(showcompact, x))
-    m == nothing ? (strlen(sprint(showcompact, x)), 0) :
-                   (strlen(m.captures[1]), strlen(m.captures[2]))
+    m == nothing ? (length(sprint(showcompact, x)), 0) :
+                   (length(m.captures[1]), length(m.captures[2]))
 end
 
-const _jl_undef_ref_str = "#undef"
-const _jl_undef_ref_alignment = (3,3)
+const undef_ref_str = "#undef"
+const undef_ref_alignment = (3,3)
 
 function alignment(
     X::AbstractMatrix,
@@ -591,26 +577,26 @@ function alignment(
             if isassigned(X,i,j)
                 aij = alignment(X[i,j])
             else
-                aij = _jl_undef_ref_alignment
+                aij = undef_ref_alignment
             end
             l = max(l, aij[1])
             r = max(r, aij[2])
         end
-        push(a, (l, r))
+        push!(a, (l, r))
         if length(a) > 1 && sum(map(sum,a)) + sep*length(a) >= cols_if_complete
-            pop(a)
+            pop!(a)
             break
         end
     end
     if 1 < length(a) < size(X,2)
         while sum(map(sum,a)) + sep*length(a) >= cols_otherwise
-            pop(a)
+            pop!(a)
         end
     end
     return a
 end
 
-function print_matrix_row(io,
+function print_matrix_row(io::IO,
     X::AbstractMatrix, A::Vector,
     i::Integer, cols::AbstractVector, sep::String
 )
@@ -621,8 +607,8 @@ function print_matrix_row(io,
             a = alignment(x)
             sx = sprint(showcompact, x)
         else
-            a = _jl_undef_ref_alignment
-            sx = _jl_undef_ref_str
+            a = undef_ref_alignment
+            sx = undef_ref_str
         end
         l = repeat(" ", A[k][1]-a[1])
         r = repeat(" ", A[k][2]-a[2])
@@ -631,14 +617,14 @@ function print_matrix_row(io,
     end
 end
 
-function print_matrix_vdots(io,
+function print_matrix_vdots(io::IO,
     vdots::String, A::Vector, sep::String, M::Integer, m::Integer
 )
     for k = 1:length(A)
         w = A[k][1] + A[k][2]
         if k % M == m
-            l = repeat(" ", max(0, A[k][1]-strlen(vdots)))
-            r = repeat(" ", max(0, w-strlen(vdots)-strlen(l)))
+            l = repeat(" ", max(0, A[k][1]-length(vdots)))
+            r = repeat(" ", max(0, w-length(vdots)-length(l)))
             print(io, l, vdots, r)
         else
             print(io, repeat(" ", w))
@@ -647,17 +633,17 @@ function print_matrix_vdots(io,
     end
 end
 
-function print_matrix(io,
+function print_matrix(io::IO,
     X::AbstractMatrix, rows::Integer, cols::Integer,
     pre::String, sep::String, post::String,
     hdots::String, vdots::String, ddots::String,
     hmod::Integer, vmod::Integer
 )
-    cols -= strlen(pre) + strlen(post)
-    presp = repeat(" ", strlen(pre))
+    cols -= length(pre) + length(post)
+    presp = repeat(" ", length(pre))
     postsp = ""
     @assert strwidth(hdots) == strwidth(ddots)
-    ss = strlen(sep)
+    ss = length(sep)
     m, n = size(X)
     if m <= rows # rows fit
         A = alignment(X,1:m,1:n,cols,cols,ss)
@@ -669,14 +655,14 @@ function print_matrix(io,
                 if i != m; println(io, ); end
             end
         else # rows fit, cols don't
-            c = div(cols-strlen(hdots)+1,2)+1
+            c = div(cols-length(hdots)+1,2)+1
             R = reverse(alignment(X,1:m,n:-1:1,c,c,ss))
-            c = cols - sum(map(sum,R)) - (length(R)-1)*ss - strlen(hdots)
+            c = cols - sum(map(sum,R)) - (length(R)-1)*ss - length(hdots)
             L = alignment(X,1:m,1:n,c,c,ss)
             for i = 1:m
                 print(io, i == 1 ? pre : presp)
                 print_matrix_row(io, X,L,i,1:length(L),sep)
-                print(io, i % hmod == 1 ? hdots : repeat(" ", strlen(hdots)))
+                print(io, i % hmod == 1 ? hdots : repeat(" ", length(hdots)))
                 print_matrix_row(io, X,R,i,n-length(R)+1:n,sep)
                 print(io, i == m ? post : postsp)
                 if i != m; println(io, ); end
@@ -699,15 +685,15 @@ function print_matrix(io,
                 end
             end
         else # neither rows nor cols fit
-            c = div(cols-strlen(hdots)+1,2)+1
+            c = div(cols-length(hdots)+1,2)+1
             R = reverse(alignment(X,I,n:-1:1,c,c,ss))
-            c = cols - sum(map(sum,R)) - (length(R)-1)*ss - strlen(hdots)
+            c = cols - sum(map(sum,R)) - (length(R)-1)*ss - length(hdots)
             L = alignment(X,I,1:n,c,c,ss)
             r = mod((length(R)-n+1),vmod)
             for i in I
                 print(io, i == 1 ? pre : presp)
                 print_matrix_row(io, X,L,i,1:length(L),sep)
-                print(io, i % hmod == 1 ? hdots : repeat(" ", strlen(hdots)))
+                print(io, i % hmod == 1 ? hdots : repeat(" ", length(hdots)))
                 print_matrix_row(io, X,R,i,n-length(R)+1:n,sep)
                 print(io, i == m ? post : postsp)
                 if i != I[end]; println(io, ); end
@@ -722,11 +708,11 @@ function print_matrix(io,
         end
     end
 end
-print_matrix(io, X::AbstractMatrix, rows::Integer, cols::Integer) =
+print_matrix(io::IO, X::AbstractMatrix, rows::Integer, cols::Integer) =
     print_matrix(io, X, rows, cols, " ", "  ", "",
                  "  \u2026  ", "\u22ee", "  \u22f1  ", 5, 5)
 
-print_matrix(io, X::AbstractMatrix) = print_matrix(io, X, tty_rows()-4, tty_cols())
+print_matrix(io::IO, X::AbstractMatrix) = print_matrix(io, X, tty_rows()-4, tty_cols())
 
 summary(x) = string(typeof(x))
 
@@ -737,17 +723,17 @@ dims2string(d) = length(d) == 0 ? "0-dimensional" :
 summary{T}(a::AbstractArray{T}) =
     string(dims2string(size(a)), " ", T, " ", typeof(a).name)
 
-function show_nd(io, a::AbstractArray)
+function show_nd(io::IO, a::AbstractArray)
     if isempty(a)
         return
     end
     tail = size(a)[3:]
     nd = ndims(a)-2
-    function print_slice(io, idxs...)
+    function print_slice(io::IO, idxs...)
         for i = 1:nd
             ii = idxs[i]
             if size(a,i+2) > 10
-                if ii == 4 && allp(x->x==1,idxs[1:i-1])
+                if ii == 4 && all(x->x==1,idxs[1:i-1])
                     for j=i+1:nd
                         szj = size(a,j+2)
                         if szj>10 && 3 < idxs[j] <= szj-3
@@ -774,7 +760,7 @@ function show_nd(io, a::AbstractArray)
 end
 
 function whos(m::Module, pattern::Regex)
-    for s in sort(map(string, names(m)))
+    for s in sort!(map(string, names(m)))
         v = symbol(s)
         if isdefined(m,v) && ismatch(pattern, s)
             println(rpad(s, 30), summary(eval(m,v)))
@@ -783,19 +769,19 @@ function whos(m::Module, pattern::Regex)
 end
 whos() = whos(r"")
 whos(m::Module) = whos(m, r"")
-whos(pat::Regex) = whos(ccall(:jl_get_current_module, Module, ()), pat)
+whos(pat::Regex) = whos(ccall(:jl_get_current_module, Any, ())::Module, pat)
 
-function show{T}(io, x::AbstractArray{T,0})
+function show{T}(io::IO, x::AbstractArray{T,0})
     println(io, summary(x),":")
     if isassigned(x)
         sx = sprint(showcompact, x[])
     else
-        sx = _jl_undef_ref_str
+        sx = undef_ref_str
     end
     print(io, sx)
 end
 
-function show(io, X::AbstractArray)
+function show(io::IO, X::AbstractArray)
     print(io, summary(X))
     if !isempty(X)
         println(io, ":")
@@ -803,7 +789,7 @@ function show(io, X::AbstractArray)
     end
 end
 
-function showall(io, X::AbstractMatrix)
+function showall(io::IO, X::AbstractMatrix)
     print(io, summary(X))
     if !isempty(X)
         println(io, ":")
@@ -811,7 +797,7 @@ function showall(io, X::AbstractMatrix)
     end
 end
 
-function showall(io, a::AbstractArray)
+function showall(io::IO, a::AbstractArray)
     print(io, summary(a))
     if isempty(a)
         return
@@ -831,17 +817,22 @@ function showall(io, a::AbstractArray)
     cartesian_map(print_slice, tail)
 end
 
-function show_vector(io, v, opn, cls)
+function show_vector(io::IO, v, opn, cls)
     X = reshape(v,(1,length(v)))
     print_matrix(io, X, 1, tty_cols(), opn, ", ", cls, "  \u2026  ", "\u22ee", "  \u22f1  ", 5, 5)
 end
 
-show(io, v::AbstractVector{Any}) = show_vector(io, v, "{", "}")
-show(io, v::AbstractVector)      = show_vector(io, v, "[", "]")
+show(io::IO, v::AbstractVector{Any}) = show_vector(io, v, "{", "}")
+show(io::IO, v::AbstractVector)      = show_vector(io, v, "[", "]")
 
-# printing bit arrays
+# printing BitArrays
 
-function _jl_print_bit_chunk(io::IO, c::Uint64, l::Integer)
+summary(a::BitArray) =
+    string(dims2string(size(a)), " ", typeof(a).name)
+
+# (following functions not exported - mainly intended for debug)
+
+function print_bit_chunk(io::IO, c::Uint64, l::Integer)
     for s = 0 : l - 1
         d = (c >>> s) & 1
         print(io, "01"[d + 1])
@@ -851,22 +842,22 @@ function _jl_print_bit_chunk(io::IO, c::Uint64, l::Integer)
     end
 end
 
-_jl_print_bit_chunk(io::IO, c::Uint64) = _jl_print_bit_chunk(io, c, 64)
+print_bit_chunk(io::IO, c::Uint64) = print_bit_chunk(io, c, 64)
 
-_jl_print_bit_chunk(c::Uint64, l::Integer) = _jl_print_bit_chunk(stdout_stream, c, l)
-_jl_print_bit_chunk(c::Uint64) = _jl_print_bit_chunk(stdout_stream, c)
+print_bit_chunk(c::Uint64, l::Integer) = print_bit_chunk(OUTPUT_STREAM, c, l)
+print_bit_chunk(c::Uint64) = print_bit_chunk(OUTPUT_STREAM, c)
 
 function bitshow(io::IO, B::BitArray)
     if length(B) == 0
         return
     end
     for i = 1 : length(B.chunks) - 1
-        _jl_print_bit_chunk(io, B.chunks[i])
+        print_bit_chunk(io, B.chunks[i])
         print(io, ": ")
     end
     l = (@_mod64 (length(B)-1)) + 1
-    _jl_print_bit_chunk(io, B.chunks[end], l)
+    print_bit_chunk(io, B.chunks[end], l)
 end
-bitshow(B::BitArray) = bitshow(stdout_stream, B)
+bitshow(B::BitArray) = bitshow(OUTPUT_STREAM, B)
 
 bitstring(B::BitArray) = sprint(bitshow, B)

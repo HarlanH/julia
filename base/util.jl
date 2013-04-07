@@ -1,22 +1,26 @@
 # timing
 
+# system date in seconds
 time() = ccall(:clock_now, Float64, ())
 
+# high-resolution relative time, in nanoseconds
+time_ns() = ccall(:jl_hrtime, Uint64, ())
+
 function tic()
-    t0 = time()
-    tls(:TIMERS, (t0, get(tls(), :TIMERS, ())))
+    t0 = time_ns()
+    task_local_storage(:TIMERS, (t0, get(task_local_storage(), :TIMERS, ())))
     return t0
 end
 
 function toq()
-    t1 = time()
-    timers = get(tls(), :TIMERS, ())
+    t1 = time_ns()
+    timers = get(task_local_storage(), :TIMERS, ())
     if is(timers,())
         error("toc() without tic()")
     end
     t0 = timers[1]
-    tls(:TIMERS, timers[2])
-    t1-t0
+    task_local_storage(:TIMERS, timers[2])
+    (t1-t0)/1e9
 end
 
 function toc()
@@ -25,19 +29,13 @@ function toc()
     return t
 end
 
-# high-resolution time
-# returns in nanoseconds
-function time_ns()
-    return ccall(:jl_hrtime, Uint64, ())
-end
-
 # print elapsed time, return expression value
 macro time(ex)
     quote
-        local t0 = time()
+        local t0 = time_ns()
         local val = $(esc(ex))
-        local t1 = time()
-        println("elapsed time: ", t1-t0, " seconds")
+        local t1 = time_ns()
+        println("elapsed time: ", (t1-t0)/1e9, " seconds")
         val
     end
 end
@@ -45,9 +43,18 @@ end
 # print nothing, return elapsed time
 macro elapsed(ex)
     quote
-        local t0 = time()
+        local t0 = time_ns()
         local val = $(esc(ex))
-        time()-t0
+        (time_ns()-t0)/1e9
+    end
+end
+
+# print nothing, return value & elapsed time
+macro timed(ex)
+    quote
+        local t0 = time_ns()
+        local val = $(esc(ex))
+        val, (time_ns()-t0)/1e9
     end
 end
 
@@ -55,7 +62,7 @@ function peakflops(n)
     a = rand(n,n)
     t = @elapsed a*a
     t = @elapsed a*a
-    floprate = (2.0*n^3/t)
+    floprate = (2.0*float64(n)^3/t)
     println("The peak flop rate is ", floprate*1e-9, " gigaflops")
     floprate
 end
@@ -64,19 +71,19 @@ peakflops() = peakflops(2000)
 
 # source files, editing, function reflection
 
-function function_loc(f::Function, types)
+function functionloc(f::Function, types)
     for m = methods(f, types)
         if isa(m[3],LambdaStaticData)
             lsd = m[3]::LambdaStaticData
             ln = lsd.line
             if ln > 0
-                return (find_in_path(string(lsd.file)), ln)
+                return (find_source_file(string(lsd.file)), ln)
             end
         end
     end
     error("could not find function definition")
 end
-function_loc(f::Function) = function_loc(f, (Any...))
+functionloc(f::Function) = functionloc(f, (Any...))
 
 function whicht(f, types)
     for m = methods(f, types)
@@ -85,8 +92,8 @@ function whicht(f, types)
             d = f.env.defs
             while !is(d,())
                 if is(d.func.code, lsd)
-                    print(stdout_stream, f.env.name)
-                    show(stdout_stream, d); println(stdout_stream)
+                    print(OUTPUT_STREAM, f.env.name)
+                    show(OUTPUT_STREAM, d); println(OUTPUT_STREAM)
                     return
                 end
                 d = d.next
@@ -97,358 +104,300 @@ end
 
 which(f, args...) = whicht(f, map(a->(isa(a,Type) ? Type{a} : typeof(a)), args))
 
-edit(file::String) = edit(file, 1)
-function edit(file::String, line::Int)
-    editor = get(ENV, "JULIA_EDITOR", "emacs")
-    issrc = file[end-2:end] == ".jl"
-    if issrc
-        if file[1]!='/' && !is_file_readable(file)
-            file2 = "$JULIA_HOME/base/$file"
-            if is_file_readable(file2)
-                file = file2
+macro which(ex)
+    ex = expand(ex)
+    exret = Expr(:call, :error, "expression is not a function call")
+    if !isa(ex, Expr)
+        # do nothing -> error
+    elseif ex.head == :call
+        exret = Expr(:call, :which, map(esc, ex.args)...)
+    elseif ex.head == :body
+        a1 = ex.args[1]
+        if isa(a1, Expr) && a1.head == :call
+            a11 = a1.args[1]
+            if isa(a11, TopNode) && a11.name == :setindex!
+                exret = Expr(:call, :which, a11, map(esc, a1.args[2:end])...)
             end
         end
-        if editor == "emacs"
-            jmode = "$JULIA_HOME/contrib/julia-mode.el"
+    elseif ex.head == :thunk
+        exret = Expr(:call, :error, "expression is not a function call, or is too complex for @which to analyze; "
+                                  * "break it down to simpler parts if possible")
+    end
+    exret
+end
+
+function find_source_file(file)
+    if file[1]!='/' && !is_file_readable(file)
+        file2 = find_in_path(file)
+        if is_file_readable(file2)
+            return file2
+        else
+            file2 = "$JULIA_HOME/../share/julia/base/$file"
+            if is_file_readable(file2)
+                return file2
+            end
+        end
+    end
+    return file
+end
+
+edit(file::String) = edit(file, 1)
+function edit(file::String, line::Integer)
+    editor = get(ENV, "JULIA_EDITOR", "emacs")
+    issrc = length(file)>2 && file[end-2:end] == ".jl"
+    if issrc
+        file = find_source_file(file)
+    end
+    if editor == "emacs"
+        if issrc
+            jmode = "$JULIA_HOME/../../contrib/julia-mode.el"
             run(`emacs $file --eval "(progn
                                      (require 'julia-mode \"$jmode\")
                                      (julia-mode)
                                      (goto-line $line))"`)
-        elseif editor == "vim"
-            run(`vim $file +$line`)
-        elseif editor == "textmate"
-            run(`mate $file -l $line`)
-        elseif editor == "subl"
-            run(`subl $file:$line`)
         else
-            error("Invalid JULIA_EDITOR value: $(repr(editor))")
+            run(`emacs $file --eval "(goto-line $line)"`)
+        end
+    elseif editor == "vim"
+        run(`vim $file +$line`)
+    elseif editor == "textmate"
+        run(`mate $file -l $line`)
+    elseif editor == "subl"
+        run(`subl $file:$line`)
+    elseif editor == "notepad"
+        run(`notepad $file`)
+    elseif editor == "start" || editor == "open"
+        if OS_NAME == :Windows
+            run(`start /b $file`)
+        elseif OS_NAME == :Darwin
+            run(`open -t $file`)
+        else
+            error("Don't know how to launch the default editor on your platform")
         end
     else
-        if editor == "emacs"
-            run(`emacs $file --eval "(goto-line $line)"`)
-        elseif editor == "vim"
-            run(`vim $file +$line`)
-        elseif editor == "textmate"
-            run(`mate $file -l $line`)
-        elseif editor == "subl"
-            run(`subl $file:$line`)
-        else
-            error("Invalid JULIA_EDITOR value: $(repr(editor))")
-        end
+        error("Invalid JULIA_EDITOR value: $(repr(editor))")
     end
     nothing
 end
 edit(file::String) = edit(file, 1)
 
-function less(file::String, line::Int)
+function less(file::String, line::Integer)
     pager = get(ENV, "PAGER", "less")
     run(`$pager +$(line)g $file`)
 end
 less(file::String) = less(file, 1)
 
-edit(f::Function)    = edit(function_loc(f)...)
-edit(f::Function, t) = edit(function_loc(f,t)...)
-less(f::Function)    = less(function_loc(f)...)
-less(f::Function, t) = less(function_loc(f,t)...)
+edit(f::Function)    = edit(functionloc(f)...)
+edit(f::Function, t) = edit(functionloc(f,t)...)
+less(f::Function)    = less(functionloc(f)...)
+less(f::Function, t) = less(functionloc(f,t)...)
 
 disassemble(f::Function, types::Tuple) =
     print(ccall(:jl_dump_function, Any, (Any,Any), f, types)::ByteString)
 
 function methods(f::Function)
     if !isgeneric(f)
-        error("methods: error: not a generic function")
+        error("methods: not a generic function")
     end
     f.env
 end
 
-methods(t::CompositeKind) = (methods(t,Tuple);  # force constructor creation
-                             t.env)
+methods(t::DataType) = (methods(t,Tuple);  # force constructor creation
+                        t.env)
 
+# print a warning only once
 
-# require
-# Store list of files and their load time
-_jl_package_list = (ByteString=>Float64)[]
-require(fname::String) = require(bytestring(fname))
-require(f::String, fs::String...) = (require(f); for x in fs require(x); end)
-function require(name::ByteString)
-    path = find_in_path(name)
-    if !has(_jl_package_list,path)
-        load_now(name)
-    else
-        # Determine whether the file has been modified since it was last loaded
-        if mtime(path) > _jl_package_list[path]
-            load_now(name)
+const have_warned = (ByteString=>Bool)[]
+function warn_once(msg::String...)
+    msg = bytestring(msg...)
+    has(have_warned,msg) && return
+    have_warned[msg] = true
+    warn(msg)
+end
+
+# system information
+
+versioninfo() = versioninfo(false)
+versioninfo(verbose::Bool) = versioninfo(OUTPUT_STREAM, verbose)
+function versioninfo(io::IO, verbose::Bool)
+    println(io,             "Julia $version_string")
+    println(io,             commit_string)
+    println(io,             "Platform Info:")
+    println(io,             "  OS_NAME: ", OS_NAME)
+    println(io,             "  WORD_SIZE: ", WORD_SIZE)
+    if verbose
+        lsb = readchomp(ignorestatus(`lsb_release -ds`) .> SpawnNullStream())
+        if lsb != ""
+            println(io,     "           ", lsb)
         end
+        println(io,         "  uname: ",readchomp(`uname -mprsv`))
+        println(io,         "Memory: $(total_memory()/2^30) GB ($(free_memory()/2^20) MB free)")
+        try println(io,     "Uptime: $(uptime()) sec") catch end
+        print(io,           "Load Avg: ")
+        print_matrix(io,    Base.loadavg()')
+        println(io          )
+        println(io,         cpu_info())
     end
-end
-
-const load = require
-
-# remote/parallel load
-
-include_string(txt::ByteString) = ccall(:jl_load_file_string, Void, (Ptr{Uint8},), txt)
-
-function is_file_readable(path)
-    s = stat(bytestring(path))
-    return isfile(s) && isreadable(s)
-end
-
-function find_in_path(name::String)
-    name[1] == '/' && return realpath(name)
-    isfile(name) && return realpath(name)
-    base = name
-    if ends_with(name,".jl")
-        base = match(r"^(.*)\.jl$",name).captures[1]
+    if Base.libblas_name == "libopenblas"
+        openblas_config = chop(bytestring( ccall((:openblas_get_config, Base.libblas_name), Ptr{Uint8}, () )))
+        println(io,         "  BLAS: ",libblas_name, " (", openblas_config, ")")
     else
-        name = strcat(base,".jl")
+        println(io,         "  BLAS: ",libblas_name)
     end
-    for prefix in LOAD_PATH
-        path = strcat(prefix,"/",base,"/src/",name)
-        is_file_readable(path) && return realpath(path)
-        path = strcat(prefix,"/",name)
-        is_file_readable(path) && return realpath(path)
-    end
-    return realpath(name)
-end
-
-begin
-local in_load = false
-local in_remote_load = false
-local load_dict = {}
-global load_now, remote_load
-
-load_now(fname::String) = load_now(bytestring(fname))
-function load_now(fname::ByteString)
-    if in_load
-        path = find_in_path(fname)
-        push(load_dict, fname)
-        f = open(path)
-        push(load_dict, readall(f))
-        close(f)
-        include(path)
-        _jl_package_list[path] = time()
-        return
-    elseif in_remote_load
-        for i=1:2:length(load_dict)
-            if load_dict[i] == fname
-                return include_string(load_dict[i+1])
+    println(io,             "  LAPACK: ",liblapack_name)
+    println(io,             "  LIBM: ",libm_name)
+    if verbose
+        println(io,         "Environment:")
+        for (k,v) in ENV
+            if !is(match(r"JULIA|PATH|FLAG|^TERM$|HOME",k), nothing)
+                println(io, "  $(k) = $(v)")
             end
         end
+        println(io          )
+        println(io,         "Packages Installed:")
+        Pkg.status(io       )
+    end
+end
+
+type UV_cpu_info_t
+    model::Ptr{Uint8}
+    speed::Int32
+    cpu_times!user::Uint64
+    cpu_times!nice::Uint64
+    cpu_times!sys::Uint64
+    cpu_times!idle::Uint64
+    cpu_times!irq::Uint64
+end
+type CPUinfo
+    model::ASCIIString
+    speed::Int32
+    cpu_times!user::Uint64
+    cpu_times!nice::Uint64
+    cpu_times!sys::Uint64
+    cpu_times!idle::Uint64
+    cpu_times!irq::Uint64
+    SC_CLK_TCK::Int
+    CPUinfo(model,speed,u,n,s,id,ir,ticks)=new(model,speed,u,n,s,id,ir,ticks)
+end
+CPUinfo(info::UV_cpu_info_t, ticks) = CPUinfo(bytestring(info.model), info.speed,
+    info.cpu_times!user, info.cpu_times!nice, info.cpu_times!sys,
+    info.cpu_times!idle, info.cpu_times!irq, ticks)
+
+show(io::IO, cpu::CPUinfo) = show(io, cpu, true, "    ")
+function show(io::IO, info::CPUinfo, header::Bool, prefix::String)
+    tck = info.SC_CLK_TCK 
+    if header
+        println(io, info.model, ": ")
+        print(" "^length(prefix))
+        if tck > 0
+            @printf io "    %5s    %9s    %9s    %9s    %9s    %9s\n" "speed" "user" "nice" "sys" "idle" "irq"
+        else
+            @printf io "    %5s    %9s  %9s  %9s  %9s  %9s ticks\n" "speed" "user" "nice" "sys" "idle" "irq"
+        end
+    end
+    print(prefix)
+    if tck > 0
+        @printf io "%5d MHz  %9d s  %9d s  %9d s  %9d s  %9d s" info.speed info.cpu_times!user/tck info.cpu_times!nice/tck info.cpu_times!sys/tck info.cpu_times!idle/tck info.cpu_times!irq/tck
     else
-        in_load = true
+        @printf io "%5d MHz  %9d  %9d  %9d  %9d  %9d ticks" info.speed info.cpu_times!user info.cpu_times!nice info.cpu_times!sys info.cpu_times!idle info.cpu_times!irq
+    end
+end
+function cpu_summary(io::IO, cpu::Array{CPUinfo}, i, j)
+    if j-i < 9
+        header = true
+        for x = i:j
+            if header == false println() end
+            show(io,cpu[x],header,"#$(x-i+1) ")
+            header = false
+        end
+    else
+        summary = CPUinfo(cpu[i].model,0,0,0,0,0,0,cpu[i].SC_CLK_TCK)
+        count = j-i+1
+        for x = i:j
+            summary.speed += cpu[i].speed
+            summary.cpu_times!user += cpu[x].cpu_times!user
+            summary.cpu_times!nice += cpu[x].cpu_times!nice
+            summary.cpu_times!sys += cpu[x].cpu_times!sys
+            summary.cpu_times!idle += cpu[x].cpu_times!idle
+            summary.cpu_times!irq += cpu[x].cpu_times!irq
+        end
+        summary.speed = div(summary.speed,count)
+        show(io,summary,true,"#1-$(count) ") 
+    end
+end
+function show(io::IO, cpu::Array{CPUinfo})
+    model = cpu[1].model
+    first = 1
+    for i = 2:length(cpu)
+        if model != cpu[i].model
+            cpu_summary(io,cpu,first,i-1)
+            first = i
+        end
+    end
+    cpu_summary(io,cpu,first,length(cpu))
+end
+repl_show(io::IO, cpu::Array{CPUinfo}) = show(io, cpu)
+function cpu_info()
+    SC_CLK_TCK = ccall(:SC_CLK_TCK, Int, ())
+    UVcpus = Array(Ptr{UV_cpu_info_t},1)
+    count = Array(Int32,1)
+    uv_error("uv_cpu_info",ccall(:uv_cpu_info, UV_error_t, (Ptr{Ptr{UV_cpu_info_t}}, Ptr{Int32}), UVcpus, count))
+    cpus = Array(CPUinfo,count[1])
+    for i = 1:length(cpus)
+        cpus[i] = CPUinfo(unsafe_ref(UVcpus[1],i),SC_CLK_TCK)
+    end
+    ccall(:uv_free_cpu_info, Void, (Ptr{UV_cpu_info_t}, Int32), UVcpus[1], count[1])
+    cpus
+end
+
+function uptime()
+    uptime_ = Array(Float64,1)
+    uv_error("uv_uptime",ccall(:uv_uptime, UV_error_t, (Ptr{Float64},), uptime_))
+    return uptime_[1]
+end
+
+function loadavg()
+    loadavg_ = Array(Float64,3)
+    ccall(:uv_loadavg, Void, (Ptr{Float64},), loadavg_)
+    return loadavg_
+end
+
+free_memory() = ccall(:uv_get_free_memory, Uint64, ())
+total_memory() = ccall(:uv_get_total_memory, Uint64, ())
+
+
+# `methodswith` -- shows a list of methods using the type given
+
+function methodswith(io::IO, t::Type, m::Module, showparents::Bool)
+    for nm in names(m)
         try
-            load_now(fname)
-            for p = 1:nprocs()
-                if p != myid()
-                    remote_do(p, remote_load, load_dict)
-                end
-            end
-        finally
-            load_dict = {}
-            in_load = false
+           mt = eval(nm)
+           d = mt.env.defs
+           while !is(d,())
+               if any(map(x -> x == t || (showparents && t <: x && x != Any && x != ANY && !isa(x, TypeVar)), d.sig))
+                   print(io, nm)
+                   show(io, d)
+                   println(io)
+               end
+               d = d.next
+           end
         end
     end
 end
 
-function remote_load(dict)
-    load_dict = dict
-    in_remote_load = true
-    try
-        load_now(dict[1])
-    finally
-        in_remote_load = false
-    end
-    nothing
-end
-end
-
-evalfile(fname::String) = eval(Main,parse(readall(fname))[1])
-
-# help
-
-_jl_help_category_list = nothing
-_jl_help_category_dict = nothing
-_jl_help_module_dict = nothing
-_jl_help_function_dict = nothing
-
-function _jl_decor_help_desc(func::String, mfunc::String, desc::String)
-    sd = split(desc, '\n')
-    for i = 1:length(sd)
-        if begins_with(sd[i], func)
-            sd[i] = mfunc * sd[i][length(func)+1:end]
-        else
-            break
-        end
-    end
-    return join(sd, '\n')
-end
-
-function _jl_init_help()
-    global _jl_help_category_list, _jl_help_category_dict,
-           _jl_help_module_dict, _jl_help_function_dict
-    if _jl_help_category_dict == nothing
-        println("Loading help data...")
-        helpdb = evalfile("$JULIA_HOME/../share/julia/helpdb.jl")
-        _jl_help_category_list = {}
-        _jl_help_category_dict = Dict()
-        _jl_help_module_dict = Dict()
-        _jl_help_function_dict = Dict()
-        for (cat,mod,func,desc) in helpdb
-            if !has(_jl_help_category_dict, cat)
-                push(_jl_help_category_list, cat)
-                _jl_help_category_dict[cat] = {}
-            end
-            if !isempty(mod)
-                if begins_with(func, '@')
-                    mfunc = "@" * mod * "." * func[2:]
-                else
-                    mfunc = mod * "." * func
-                end
-                desc = _jl_decor_help_desc(func, mfunc, desc)
-            else
-                mfunc = func
-            end
-            push(_jl_help_category_dict[cat], mfunc)
-            if !has(_jl_help_function_dict, mfunc)
-                _jl_help_function_dict[mfunc] = {}
-            end
-            push(_jl_help_function_dict[mfunc], desc)
-            if !has(_jl_help_module_dict, func)
-                _jl_help_module_dict[func] = {}
-            end
-            if !contains(_jl_help_module_dict[func], mod)
-                push(_jl_help_module_dict[func], mod)
+methodswith(t::Type, m::Module, showparents::Bool) = methodswith(OUTPUT_STREAM, t, m, showparents)
+methodswith(t::Type, showparents::Bool) = methodswith(OUTPUT_STREAM, t, showparents)
+methodswith(t::Type, m::Module) = methodswith(OUTPUT_STREAM, t, m, false)
+methodswith(t::Type) = methodswith(OUTPUT_STREAM, t, false)
+function methodswith(io::IO, t::Type, showparents::Bool)
+    mainmod = ccall(:jl_get_current_module, Any, ())::Module
+    # find modules in Main
+    for nm in names(mainmod)
+        if isdefined(mainmod,nm)
+            mod = eval(mainmod, nm)
+            if isa(mod, Module)
+                methodswith(io, t, mod, showparents)
             end
         end
     end
 end
-
-function help()
-    _jl_init_help()
-    print(
-" Welcome to Julia. The full manual is available at
-
-    http://docs.julialang.org
-
- To get help on a function, try help(function). To search all help text,
- try apropos(\"string\"). To see available functions, try help(category),
- for one of the following categories:
-
-")
-    for cat = _jl_help_category_list
-        if !isempty(_jl_help_category_dict[cat])
-            print("  ")
-            show(cat); println()
-        end
-    end
-end
-
-function help(cat::String)
-    _jl_init_help()
-    if !has(_jl_help_category_dict, cat)
-        # if it's not a category, try another named thing
-        return help_for(cat)
-    end
-    println("Help is available for the following items:")
-    for func = _jl_help_category_dict[cat]
-        print(func, " ")
-    end
-    println()
-end
-
-function _jl_print_help_entries(entries)
-    first = true
-    for desc in entries
-        if !first
-            println()
-        end
-        println(strip(desc))
-        first = false
-    end
-end
-
-help_for(s::String) = help_for(s, 0)
-function help_for(fname::String, obj)
-    _jl_init_help()
-    found = false
-    if contains(fname, '.')
-        if has(_jl_help_function_dict, fname)
-            _jl_print_help_entries(_jl_help_function_dict[fname])
-            found = true
-        end
-    else
-        macrocall = ""
-        if begins_with(fname, '@')
-            sfname = fname[2:]
-            macrocall = "@"
-        else
-            sfname = fname
-        end
-        if has(_jl_help_module_dict, fname)
-            allmods = _jl_help_module_dict[fname]
-            alldesc = {}
-            for mod in allmods
-                mod_prefix = isempty(mod) ? "" : mod * "."
-                append!(alldesc, _jl_help_function_dict[macrocall * mod_prefix * sfname])
-            end
-            _jl_print_help_entries(alldesc)
-            found = true
-        end
-    end
-    if !found
-        if isgeneric(obj)
-            repl_show(obj); println()
-        else
-            println("No help information found.")
-        end
-    end
-end
-
-function apropos(txt::String)
-    _jl_init_help()
-    n = 0
-    r = Regex("\\Q$txt", PCRE.CASELESS)
-    for (cat, _) in _jl_help_category_dict
-        if ismatch(r, cat)
-            println("Category: \"$cat\"")
-        end
-    end
-    for (func, entries) in _jl_help_function_dict
-        if ismatch(r, func) || anyp(e->ismatch(r,e), entries)
-            for desc in entries
-                nl = search(desc,'\n')
-                if nl[1] != 0
-                    println(desc[1:(nl[1]-1)])
-                else
-                    println(desc)
-                end
-            end
-            n+=1
-        end
-    end
-    if n == 0
-        println("No help information found.")
-    end
-end
-
-function help(f::Function)
-    if is(f,help)
-        return help()
-    end
-    help_for(string(f), f)
-end
-
-help(t::CompositeKind) = help_for(string(t.name),t)
-
-function help(x)
-    show(x)
-    t = typeof(x)
-    println(" is of type $t")
-    if isa(t,CompositeKind)
-        println("  which has fields $(t.names)")
-    end
-end
-
-# misc
-
-times(f::Function, n::Int) = for i=1:n f() end

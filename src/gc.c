@@ -24,13 +24,17 @@
 // OBJPROFILE counts objects by type
 //#define OBJPROFILE
 
-#ifdef __LP64__
+#ifdef _P64
 # define BVOFFS 2
 #else
 # define BVOFFS 4
 #endif
 
+#ifdef _P64
 #define GC_PAGE_SZ (1536*sizeof(void*))//bytes
+#else
+#define GC_PAGE_SZ (2048*sizeof(void*))//bytes
+#endif
 
 typedef struct _gcpage_t {
     char data[GC_PAGE_SZ];
@@ -58,7 +62,7 @@ typedef struct _pool_t {
 typedef struct _bigval_t {
     struct _bigval_t *next;
     size_t sz;
-#ifndef __LP64__
+#ifndef _P64
     uptrint_t _pad0;
     uptrint_t _pad1;
 #endif
@@ -88,7 +92,7 @@ static size_t allocd_bytes = 0;
 static size_t freed_bytes = 0;
 #define default_collect_interval (3200*1024*sizeof(void*))
 static size_t collect_interval = default_collect_interval;
-#ifdef __LP64__
+#ifdef _P64
 # define max_collect_interval 1250000000UL
 #else
 # define max_collect_interval 500000000UL
@@ -128,7 +132,7 @@ void jl_gc_unpreserve(void)
 DLLEXPORT jl_weakref_t *jl_gc_new_weakref(jl_value_t *value)
 {
     jl_weakref_t *wr = (jl_weakref_t*)alloc_2w();
-    wr->type = (jl_type_t*)jl_weakref_type;
+    wr->type = (jl_value_t*)jl_weakref_type;
     wr->value = value;
     arraylist_push(&weak_refs, wr);
     return wr;
@@ -205,7 +209,7 @@ void jl_gc_add_finalizer(jl_value_t *v, jl_function_t *f)
 
 static int szclass(size_t sz)
 {
-#ifndef __LP64__
+#ifndef _P64
     if     (sz <=    8) return 0;
 #endif
     if     (sz <=   56) return ((sz+3)/4) - 2;
@@ -219,17 +223,38 @@ static int szclass(size_t sz)
     return 41;
 }
 
+#ifdef __LP64__
+#define malloc_a16(sz) malloc(((sz)+15)&-16)
+#else
+#if defined(WIN32)
+// TODO - use _aligned_malloc, which requires _aligned_free
+#define malloc_a16(sz) malloc(((sz)+15)&-16)
+
+#elif defined(__APPLE__)
+#define malloc_a16(sz) malloc(((sz)+15)&-16)
+
+#else
+static inline void *malloc_a16(size_t sz)
+{
+    void *ptr;
+    if (posix_memalign(&ptr, 16, (sz+15)&-16))
+        return NULL;
+    return ptr;
+}
+#endif
+#endif
+
 static void *alloc_big(size_t sz)
 {
     if (allocd_bytes > collect_interval) {
         jl_gc_collect();
     }
-    sz = (sz+3) & -4;
     size_t offs = BVOFFS*sizeof(void*);
-    if (sz + offs < offs)  // overflow in adding offs, size was "negative"
+    if (sz+offs+15 < offs+15)  // overflow in adding offs, size was "negative"
         jl_throw(jl_memory_exception);
-    bigval_t *v = (bigval_t*)malloc(sz + offs);
-    allocd_bytes += (sz+offs);
+    size_t allocsz = (sz+offs+15) & -16;
+    bigval_t *v = (bigval_t*)malloc_a16(allocsz);
+    allocd_bytes += allocsz;
     if (v == NULL)
         jl_throw(jl_memory_exception);
     v->sz = sz;
@@ -283,8 +308,8 @@ jl_mallocptr_t *jl_gc_managed_malloc(size_t sz)
     if (allocd_bytes > collect_interval) {
         jl_gc_collect();
     }
-    sz = (sz+3) & -4;
-    void *b = malloc(sz);
+    sz = (sz+15) & -16;
+    void *b = malloc_a16(sz);
     if (b == NULL)
         jl_throw(jl_memory_exception);
     allocd_bytes += sz;
@@ -316,7 +341,7 @@ static void sweep_malloc_ptrs(void)
 
 static void add_page(pool_t *p)
 {
-    gcpage_t *pg = malloc(sizeof(gcpage_t));
+    gcpage_t *pg = malloc_a16(sizeof(gcpage_t));
     if (pg == NULL)
         jl_throw(jl_memory_exception);
     gcval_t *v = (gcval_t*)&pg->data[0];
@@ -445,8 +470,8 @@ static void push_root(jl_value_t *v)
         (*((ptrint_t*)bp))++;
 #endif
     gc_setmark(v);
-    if (gc_typeof(vt) == (jl_value_t*)jl_bits_kind ||
-        vt == (jl_value_t*)jl_weakref_type) {
+    if (vt == (jl_value_t*)jl_weakref_type ||
+        (jl_is_datatype(vt) && ((jl_datatype_t*)vt)->pointerfree)) {
         return;
     }
     if (mark_sp >= mark_stack_size) {
@@ -469,19 +494,17 @@ static void gc_mark_stack(jl_gcframe_t *s, ptrint_t offset)
 {
     while (s != NULL) {
         s = (jl_gcframe_t*)((char*)s + offset);
-        size_t i;
-        jl_value_t ***rts = (jl_value_t***)((char*)s->roots + offset);
-        if (s->indirect) {
-            size_t nr = s->nroots;
-            for(i=0; i < nr; i++) {
+        jl_value_t ***rts = (jl_value_t***)(((void**)s)+2);
+        size_t nr = s->nroots>>1;
+        if (s->nroots & 1) {
+            for(size_t i=0; i < nr; i++) {
                 jl_value_t **ptr = (jl_value_t**)((char*)rts[i] + offset);
                 if (*ptr != NULL)
                     gc_push_root(*ptr);
             }
         }
         else {
-            size_t nr = s->nroots;
-            for(i=0; i < nr; i++) {
+            for(size_t i=0; i < nr; i++) {
                 if (rts[i] != NULL)
                     gc_push_root(rts[i]);
             }
@@ -500,7 +523,8 @@ static void gc_mark_module(jl_module_t *m)
             gc_setmark_buf(b);
             if (b->value != NULL)
                 gc_push_root(b->value);
-            gc_push_root(b->type);
+            if (b->type != (jl_value_t*)jl_any_type)
+                gc_push_root(b->type);
         }
     }
 }
@@ -527,16 +551,15 @@ static void gc_mark_all()
                 gc_push_root(elt);
         }
     }
-    else if (((jl_struct_type_t*)(vt))->name == jl_array_typename) {
+    else if (((jl_datatype_t*)(vt))->name == jl_array_typename) {
         jl_array_t *a = (jl_array_t*)v;
         char *data = a->data;
         if (data == NULL) continue;
         int ndims = jl_array_ndims(a);
-        void *data_area = jl_array_inline_data_area(a);
         char *data0 = data;
         if (ndims == 1) data0 -= a->offset*a->elsize;
-        if (data0 != data_area) {
-            jl_value_t *owner = *(jl_value_t**)data_area;
+        if (!a->isinline) {
+            jl_value_t *owner = jl_array_data_owner(a);
             if (a->ismalloc) {
                 // jl_mallocptr_t
                 if (gc_marked(owner))
@@ -553,7 +576,7 @@ static void gc_mark_all()
             }
         }
         if (a->ptrarray) {
-            size_t l = a->length;
+            size_t l = jl_array_len(a);
             for(size_t i=0; i < l; i++) {
                 jl_value_t *elt = ((jl_value_t**)data)[i];
                 if (elt != NULL) gc_push_root(elt);
@@ -590,11 +613,11 @@ static void gc_mark_all()
         }
     }
     else {
-        jl_struct_type_t *st = (jl_struct_type_t*)vt;
-        int nf = (int)jl_tuple_len(st->names);
+        jl_datatype_t *dt = (jl_datatype_t*)vt;
+        int nf = (int)jl_tuple_len(dt->names);
         for(int i=0; i < nf; i++) {
-            if (st->fields[i].isptr) {
-                jl_value_t *fld = *(jl_value_t**)((char*)v + st->fields[i].offset + sizeof(void*));
+            if (dt->fields[i].isptr) {
+                jl_value_t *fld = *(jl_value_t**)((char*)v + dt->fields[i].offset + sizeof(void*));
                 if (fld)
                     gc_push_root(fld);
             }
@@ -609,6 +632,18 @@ extern jl_value_t * volatile jl_task_arg_in_transit;
 #if defined(GCTIME) || defined(GC_FINAL_STATS)
 double clock_now(void);
 #endif
+
+static void gc_mark_uv_handle(uv_handle_t *handle, void *arg)
+{
+    if(handle->data) {
+        gc_push_root((jl_value_t*)(handle->data));
+    }
+}
+
+static void gc_mark_uv_state(uv_loop_t *loop)
+{
+    uv_walk(loop,gc_mark_uv_handle,0);
+}
 
 static void gc_mark(void)
 {
@@ -629,11 +664,15 @@ static void gc_mark(void)
     gc_push_root(jl_unprotect_stack_func);
     gc_push_root(jl_bottom_func);
     gc_push_root(jl_typetype_type);
+    gc_push_root(jl_tupletype_type);
 
     // constants
     gc_push_root(jl_null);
     gc_push_root(jl_true);
     gc_push_root(jl_false);
+
+    // libuv loops
+    gc_mark_uv_state(jl_global_event_loop());
 
     jl_mark_box_caches();
 
@@ -650,7 +689,7 @@ static void gc_mark(void)
     }
 
     gc_mark_all();
-    
+
     // find unmarked objects that need to be finalized.
     // this must happen last.
     for(i=0; i < finalizer_table.size; i+=2) {
@@ -667,7 +706,7 @@ static void gc_mark(void)
     gc_mark_all();
 }
 
-static int is_gc_enabled = 0;
+static int is_gc_enabled = 1;
 DLLEXPORT void jl_gc_enable(void)    { is_gc_enabled = 1; }
 DLLEXPORT void jl_gc_disable(void)   { is_gc_enabled = 0; }
 DLLEXPORT int jl_gc_is_enabled(void) { return is_gc_enabled; }
@@ -683,12 +722,11 @@ static void big_obj_stats(void);
 #ifdef OBJPROFILE
 static void print_obj_profile(void)
 {
-    jl_value_t *errstream = jl_stderr_obj();
     for(int i=0; i < obj_counts.size; i+=2) {
         if (obj_counts.table[i+1] != HT_NOTFOUND) {
-            ios_printf(ios_stderr, "%d ", obj_counts.table[i+1]-1);
-            jl_show(errstream, obj_counts.table[i]);
-            ios_printf(ios_stderr, "\n");
+            jl_printf(JL_STDERR, "%d ", obj_counts.table[i+1]-1);
+            jl_debug_print_type(JL_STDERR, (jl_value_t*)obj_counts.table[i]);
+            jl_printf(JL_STDERR, "\n");
         }
     }
 }
@@ -773,7 +811,7 @@ void *alloc_2w(void)
 #ifdef MEMDEBUG
     return alloc_big(2*sizeof(void*));
 #endif
-#ifdef __LP64__
+#ifdef _P64
     return pool_alloc(&pools[2]);
 #else
     return pool_alloc(&pools[0]);
@@ -785,7 +823,7 @@ void *alloc_3w(void)
 #ifdef MEMDEBUG
     return alloc_big(3*sizeof(void*));
 #endif
-#ifdef __LP64__
+#ifdef _P64
     return pool_alloc(&pools[4]);
 #else
     return pool_alloc(&pools[1]);
@@ -797,7 +835,7 @@ void *alloc_4w(void)
 #ifdef MEMDEBUG
     return alloc_big(4*sizeof(void*));
 #endif
-#ifdef __LP64__
+#ifdef _P64
     return pool_alloc(&pools[6]);
 #else
     return pool_alloc(&pools[2]);
@@ -807,17 +845,17 @@ void *alloc_4w(void)
 #ifdef GC_FINAL_STATS
 static double process_t0;
 #include <malloc.h>
-void print_gc_stats(void)
+void jl_print_gc_stats(JL_STREAM *s)
 {
     malloc_stats();
     double ptime = clock_now()-process_t0;
-    ios_printf(ios_stderr, "exec time\t%.5f sec\n", ptime);
-    ios_printf(ios_stdout, "gc time  \t%.5f sec (%2.1f%%)\n", total_gc_time,
+    jl_printf(s, "exec time\t%.5f sec\n", ptime);
+    jl_printf(s, "gc time  \t%.5f sec (%2.1f%%)\n", total_gc_time,
                (total_gc_time/ptime)*100);
     struct mallinfo mi = mallinfo();
-    ios_printf(ios_stdout, "malloc size\t%d MB\n", mi.uordblks/1024/1024);
-    ios_printf(ios_stdout, "total freed\t%llu b\n", total_freed_bytes);
-    ios_printf(ios_stdout, "free rate\t%.1f MB/sec\n",
+    jl_printf(s, "malloc size\t%d MB\n", mi.uordblks/1024/1024);
+    jl_printf(s, "total freed\t%llu b\n", total_freed_bytes);
+    jl_printf(s, "free rate\t%.1f MB/sec\n",
                (total_freed_bytes/total_gc_time)/1024/1024);
 }
 #endif
@@ -831,7 +869,7 @@ void jl_gc_init(void)
 
                          288, 320, 352, 384, 416, 448, 480, 512,
 
-                         640, 768, 896, 1024, 
+                         640, 768, 896, 1024,
 
                          1536, 2048 };
     int i;
@@ -855,7 +893,6 @@ void jl_gc_init(void)
 #endif
 #ifdef GC_FINAL_STATS
     process_t0 = clock_now();
-    atexit(print_gc_stats);
 #endif
 }
 

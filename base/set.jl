@@ -1,39 +1,42 @@
 type Set{T}
-    hash::Dict{T,Bool}
+    dict::Dict{T,Nothing}
 
-    Set() = new((T=>Bool)[])
-    Set(x...) = add_each(new(Dict{T,Bool}(length(x))), x)
+    Set() = new(Dict{T,Nothing}())
+    Set(x...) = add_each!(new(Dict{T,Nothing}()), x)
 end
 Set() = Set{Any}()
 Set(x...) = Set{Any}(x...)
 Set{T}(x::T...) = Set{T}(x...)
 
-show(io, s::Set) = (show(io, typeof(s)); show_comma_array(io, s,'(',')'))
+show(io::IO, s::Set) = (show(io, typeof(s)); show_comma_array(io, s,'(',')'))
 
-isempty(s::Set) = isempty(s.hash)
-length(s::Set)  = length(s.hash)
-elements(s::Set) = keys(s.hash)
+isempty(s::Set) = isempty(s.dict)
+length(s::Set)  = length(s.dict)
 eltype{T}(s::Set{T}) = T
 
-has(s::Set, x) = has(s.hash, x)
+has(s::Set, x) = has(s.dict, x)
 contains(s::Set, x) = has(s, x)
-get(s::Set, x, deflt) = get(s.hash, x, false)
 
-add(s::Set, x) = (s.hash[x] = true; s)
-del(s::Set, x) = (del(s.hash, x); s)
+add!(s::Set, x) = (s.dict[x] = nothing; s)
+delete!(s::Set, x) = (delete!(s.dict, x); x)
+# TODO: this method doesn't make much sense for sets:
+delete!(s::Set, x, deflt) = has(s.dict, x) ? delete!(s.dict, x) : deflt
 
-add_each(s::Set, xs) = (for x=xs; add(s,x); end; s)
-del_each(s::Set, xs) = (for x=xs; del(s,x); end; s)
+add_each!(s::Set, xs) = (for x=xs; add!(s,x); end; s)
+del_each!(s::Set, xs) = (for x=xs; delete!(s,x); end; s)
 
 similar{T}(s::Set{T}) = Set{T}()
-copy(s::Set) = add_each(similar(s), s)
+copy(s::Set) = add_each!(similar(s), s)
 
-del_all{T}(s::Set{T}) = (del_all(s.hash); s)
+empty!{T}(s::Set{T}) = (empty!(s.dict); s)
 
-start(s::Set)       = start(s.hash)
-done(s::Set, state) = done(s.hash, state)
+start(s::Set)       = start(s.dict)
+done(s::Set, state) = done(s.dict, state)
 # NOTE: manually optimized to take advantage of Dict representation
-next(s::Set, i)     = (s.hash.keys[i], skip_deleted(s.hash,i+1))
+next(s::Set, i)     = (s.dict.keys[i], skip_deleted(s.dict,i+1))
+
+# TODO: simplify me?
+pop!(s::Set) = (val = s.dict.keys[start(s.dict)]; delete!(s.dict, val); val)
 
 union() = Set()
 union(s::Set) = copy(s)
@@ -47,9 +50,9 @@ function union(s::Set, sets::Set...)
         end
     end
     u = Set{U}()
-    add_each(u,s)
+    add_each!(u,s)
     for t in sets
-        add_each(u,t)
+        add_each!(u,t)
     end
     return u
 end
@@ -59,8 +62,8 @@ function intersect(s::Set, sets::Set...)
     i = copy(s)
     for x in s
         for t in sets
-            if !has(t,x)
-                del(i,x)
+            if !has(t,x) & has(i,x)
+                delete!(i,x)
             end
         end
     end
@@ -71,7 +74,7 @@ function setdiff(a::Set, b::Set)
     d = copy(a)
     for x in b
         if has(d, x)
-            del(d, x)
+            delete!(d, x)
         end
     end
     d
@@ -81,6 +84,26 @@ end
 (&)(s::Set...) = intersect(s...)
 -(a::Set, b::Set) = setdiff(a,b)
 
-isequal(l::Set, r::Set) = length(l) == length(r) == length(intersect(l,r))
+isequal(l::Set, r::Set) = (length(l) == length(r)) && (l <= r)
+isless(l::Set, r::Set) = (length(l) < length(r)) && (l <= r)
+function <=(l::Set, r::Set)
+    for elt in l
+        if !has(r, elt)
+            return false
+        end
+    end
+    return true
+end
 
-unique(C) = elements(add_each(Set{eltype(C)}(), C))
+unique(C) = collect(add_each!(Set{eltype(C)}(), C))
+
+function filter!(f::Function, s::Set)
+    for x in s
+        if !f(x)
+            delete!(s, x)
+        end
+    end
+    return s
+end
+filter(f::Function, s::Set) = filter!(f, copy(s))
+

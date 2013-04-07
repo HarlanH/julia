@@ -1,6 +1,6 @@
 # parameters limiting potentially-infinite types
-const MAX_TYPEUNION_LEN = 2
-const MAX_TYPE_DEPTH = 2
+const MAX_TYPEUNION_LEN = 3
+const MAX_TYPE_DEPTH = 4
 const MAX_TUPLETYPE_LEN  = 8
 const MAX_TUPLE_DEPTH = 4
 
@@ -42,21 +42,29 @@ function is_static_parameter(sv::StaticVarInfo, s::Symbol)
     return false
 end
 
+function contains_is(itr, x::ANY)
+    for y in itr
+        if is(y,x)
+            return true
+        end
+    end
+    return false
+end
+
 is_local(sv::StaticVarInfo, s::Symbol) = contains_is(sv.vars, s)
 is_closed(sv::StaticVarInfo, s::Symbol) = has(sv.cenv, s)
 is_global(sv::StaticVarInfo, s::Symbol) =
     !is_local(sv,s) && !is_closed(sv,s) && !is_static_parameter(sv,s)
 
-tintersect(a::ANY,b::ANY) = ccall(:jl_type_intersection, Any, (Any,Any), a, b)
+typeintersect(a::ANY,b::ANY) = ccall(:jl_type_intersection, Any, (Any,Any), a, b)
 
-methods(f::Union(Function,CompositeKind),t) = methods(f,t,-1)::Array{Any,1}
-methods(f::Union(Function,CompositeKind),t,lim) = ccall(:jl_matching_methods, Any, (Any,Any,Int32), f, t, lim)
+methods(f::ANY,t::ANY) = _methods(f,t,-1)::Array{Any,1}
+_methods(f::ANY,t::ANY,lim) = ccall(:jl_matching_methods, Any, (Any,Any,Int32), f, t, lim)
 
-typeseq(a,b) = subtype(a,b)&&subtype(b,a)
+typeseq(a::ANY,b::ANY) = subtype(a,b)&&subtype(b,a)
 
-isbuiltin(f) = ccall(:jl_is_builtin, Int32, (Any,), f) != 0
-isgeneric(f) = (isa(f,Function)||isa(f,CompositeKind)) && isa(f.env,MethodTable)
-isleaftype(t) = ccall(:jl_is_leaf_type, Int32, (Any,), t) != 0
+isgeneric(f::ANY) = (isa(f,Function)||isa(f,DataType)) && isa(f.env,MethodTable)
+isleaftype(t::ANY) = ccall(:jl_is_leaf_type, Int32, (Any,), t) != 0
 
 isconst(s::Symbol) =
     ccall(:jl_is_const, Int32, (Ptr{Void}, Any), C_NULL, s) != 0
@@ -69,13 +77,13 @@ function _iisconst(s::Symbol)
     isdefined(m,s) && (ccall(:jl_is_const, Int32, (Any, Any), m, s) != 0)
 end
 
-_ieval(x) = eval((inference_stack::CallStack).mod, x)
-_iisdefined(x) = isdefined((inference_stack::CallStack).mod, x)
+_ieval(x::ANY) = eval((inference_stack::CallStack).mod, x)
+_iisdefined(x::ANY) = isdefined((inference_stack::CallStack).mod, x)
 
 _iisconst(s::SymbolNode) = _iisconst(s.name)
 _iisconst(s::TopNode) = isconst(_basemod(), s.name)
 _iisconst(x::Expr) = false
-_iisconst(x) = true
+_iisconst(x::ANY) = true
 
 function _basemod()
     m = (inference_stack::CallStack).mod
@@ -87,9 +95,9 @@ end
 
 cmp_tfunc = (x,y)->Bool
 
-isType(t::ANY) = isa(t,AbstractKind) && is((t::AbstractKind).name,Type.name)
+isType(t::ANY) = isa(t,DataType) && is((t::DataType).name,Type.name)
 
-isseqtype(t::ANY) = isa(t,AbstractKind) && is((t::AbstractKind).name.name,:...)
+isvarargtype(t::ANY) = isa(t,DataType)&&is((t::DataType).name,Vararg.name)
 
 const t_func = ObjectIdDict()
 #t_func[tuple] = (0, Inf, (args...)->limit_tuple_depth(args))
@@ -119,6 +127,7 @@ t_func[fpiseq32] = (2, 2, cmp_tfunc)
 t_func[fpiseq64] = (2, 2, cmp_tfunc)
 t_func[fpislt32] = (2, 2, cmp_tfunc)
 t_func[fpislt64] = (2, 2, cmp_tfunc)
+t_func[nan_dom_err] = (2, 2, (a, b)->a)
 t_func[eval(Core,:ccall)] =
     (3, Inf, (fptr, rt, at, a...)->(is(rt,Type{Void}) ? Nothing :
                                     isType(rt) ? rt.parameters[1] : Any))
@@ -127,7 +136,7 @@ t_func[subtype] = (2, 2, cmp_tfunc)
 t_func[isa] = (2, 2, cmp_tfunc)
 t_func[isdefined] = (1, 2, (args...)->Bool)
 t_func[Union] = (0, Inf,
-                 (args...)->(if allp(isType,args)
+                 (args...)->(if all(isType,args)
                                  Type{Union(map(t->t.parameters[1],args)...)}
                              else
                                  Type
@@ -136,27 +145,31 @@ t_func[method_exists] = (2, 2, cmp_tfunc)
 t_func[applicable] = (1, Inf, (f, args...)->Bool)
 t_func[tuplelen] = (1, 1, x->Int)
 t_func[arraylen] = (1, 1, x->Int)
-#t_func[arrayref] = (2,Inf,(a,i...)->(isa(a,CompositeKind) && subtype(a,Array) ?
+#t_func[arrayref] = (2,Inf,(a,i...)->(isa(a,DataType) && subtype(a,Array) ?
 #                                     a.parameters[1] : Any))
 #t_func[arrayset] = (3, Inf, (a,v,i...)->a)
 arraysize_tfunc(a, d) = Int
 function arraysize_tfunc(a)
-    if isa(a,CompositeKind) && subtype(a,Array)
-        return NTuple{a.parameters[2],Int}
+    if isa(a,DataType) && subtype(a,Array)
+        N = a.parameters[2]
+        return isa(N,Int) ? NTuple{N,Int} : (Int...)
     else
-        return NTuple{Array.parameters[2],Int}
+        return (Int...)
     end
 end
 t_func[arraysize] = (1, 2, arraysize_tfunc)
-t_func[pointerref] = (2,2,(a,i)->(subtype(a,Ptr) ? a.parameters[1] : Any))
+t_func[pointerref] = (2,2,(a,i)->(isa(a,DataType)&&subtype(a,Ptr) ? a.parameters[1] : Any))
 t_func[pointerset] = (3, 3, (a,v,i)->a)
 
 function static_convert(to::ANY, from::ANY)
     if !isa(to,Tuple) || !isa(from,Tuple)
+        if isa(to,TypeVar)
+            return to
+        end
         if subtype(from, to)
             return from
         end
-        t = tintersect(from,to)
+        t = typeintersect(from,to)
         return is(t,None) ? to : t
     end
     if is(to,Tuple)
@@ -170,19 +183,22 @@ function static_convert(to::ANY, from::ANY)
         if pseq
         elseif i <= pl
             pe = to[i]
-            if isseqtype(pe)
+            if isvarargtype(pe)
                 pe = pe.parameters[1]
+                pseq = true
+            elseif isa(pe,TypeVar) && isvarargtype(pe.ub)
+                pe = pe.ub.parameters[1]
                 pseq = true
             end
         else
             return None
         end
         # tuple conversion calls convert recursively
-        if isseqtype(ce)
+        if isvarargtype(ce)
             R = abstract_call_gf(convert, (), (Type{pe}, ce.parameters[1]), ())
             #R = static_convert(pe, ce.parameters[1])
             isType(R) && (R = R.parameters[1])
-            result[i] = ...{R}
+            result[i] = Vararg{R}
         else
             R = abstract_call_gf(convert, (), (Type{pe}, ce), ())
             #R = static_convert(pe, ce)
@@ -195,7 +211,7 @@ end
 t_func[convert_default] =
     (3, 3, (t,x,f)->(isType(t) ? static_convert(t.parameters[1],x) : Any))
 t_func[convert_tuple] =
-    (3, 3, (t,x,f)->(if isa(t,Tuple) && allp(isType,t)
+    (3, 3, (t,x,f)->(if isa(t,Tuple) && all(isType,t)
                          t = Type{map(t->t.parameters[1],t)}
                      end;
                      isType(t) ? static_convert(t.parameters[1],x) :
@@ -208,13 +224,13 @@ const typeof_tfunc = function (t)
         else
             Type{typeof(t)}
         end
-    elseif isa(t,AbstractKind) || isa(t,CompositeKind) || isa(t,BitsKind)
+    elseif isa(t,DataType)
         if isleaftype(t)
             Type{t}
         else
             Type{TypeVar(:_,t)}
         end
-    elseif isa(t,UnionKind)
+    elseif isa(t,UnionType)
         Union(map(typeof_tfunc, t.types)...)
     elseif isa(t,Tuple)
         map(typeof_tfunc, t)
@@ -228,16 +244,16 @@ t_func[typeof] = (1, 1, typeof_tfunc)
 # involving constants: typeassert, tupleref, getfield, fieldtype, apply_type
 # therefore they get their arguments unevaluated
 t_func[typeassert] =
-    (2, 2, (A, v, t)->(isType(t) ? tintersect(v,t.parameters[1]) :
-                       isa(t,Tuple) && allp(isType,t) ?
-                           tintersect(v,map(t->t.parameters[1],t)) :
+    (2, 2, (A, v, t)->(isType(t) ? typeintersect(v,t.parameters[1]) :
+                       isa(t,Tuple) && all(isType,t) ?
+                           typeintersect(v,map(t->t.parameters[1],t)) :
                        Any))
 
 const tupleref_tfunc = function (A, t, i)
     if is(t,())
         return None
     end
-    if isa(t,AbstractKind) && is(t.name,NTuple.name)
+    if isa(t,DataType) && is(t.name,NTuple.name)
         return t.parameters[2]
     end
     if !isa(t,Tuple)
@@ -245,7 +261,7 @@ const tupleref_tfunc = function (A, t, i)
     end
     n = length(t)
     last = tupleref(t,n)
-    vararg = isseqtype(last)
+    vararg = isvarargtype(last)
     if isa(A[2],Integer)
         # index is a constant
         i = A[2]
@@ -279,7 +295,7 @@ const getfield_tfunc = function (A, s, name)
             return Any
         end
     end
-    if !isa(s,CompositeKind)
+    if !isa(s,DataType) || s.abstract
         return Any
     end
     if isa(A[2],QuoteNode) && isa(A[2].value,Symbol)
@@ -304,7 +320,7 @@ end
 t_func[getfield] = (2, 2, getfield_tfunc)
 t_func[setfield] = (3, 3, (o, f, v)->v)
 const fieldtype_tfunc = function (A, s, name)
-    if !isa(s,CompositeKind)
+    if !isa(s,DataType)
         return Type
     end
     t = getfield_tfunc(A, s, name)
@@ -314,7 +330,6 @@ const fieldtype_tfunc = function (A, s, name)
     Type{t}
 end
 t_func[fieldtype] = (2, 2, fieldtype_tfunc)
-t_func[Expr] = (3, 3, (a,b,c)->Expr)
 t_func[Box] = (1, 1, (a,)->Box)
 
 # TODO: handle e.g. apply_type(T, R::Union(Type{Int32},Type{Float64}))
@@ -323,7 +338,7 @@ const apply_type_tfunc = function (A, args...)
         return Any
     end
     headtype = args[1].parameters[1]
-    if isa(headtype,UnionKind) || isa(headtype,Tuple)
+    if isa(headtype,UnionType) || isa(headtype,Tuple)
         return args[1]
     end
     tparams = ()
@@ -348,6 +363,9 @@ const apply_type_tfunc = function (A, args...)
         appl = args[1]
         uncertain = true
     end
+    if type_too_complex(appl,0)
+        return args[1]
+    end
     uncertain ? Type{TypeVar(:_,appl)} : Type{appl}
 end
 t_func[apply_type] = (1, Inf, apply_type_tfunc)
@@ -357,25 +375,28 @@ t_func[apply_type] = (1, Inf, apply_type_tfunc)
 function builtin_tfunction(f::ANY, args::ANY, argtypes::ANY)
     if is(f,tuple)
         return limit_tuple_depth(argtypes)
-    end
-    if is(f,arrayset)
+    elseif is(f,arrayset)
         if length(argtypes) < 3
             return None
         end
         return argtypes[1]
-    end
-    if is(f,arrayref)
+    elseif is(f,arrayref)
         if length(argtypes) < 2
             return None
         end
         a = argtypes[1]
-        return (isa(a,CompositeKind) && subtype(a,Array) ?
+        return (isa(a,DataType) && subtype(a,Array) ?
                 a.parameters[1] : Any)
+    elseif is(f,Expr)
+        if length(argtypes) < 1
+            return None
+        end
+        return Expr
     end
     tf = get(t_func::ObjectIdDict, f, false)
     if is(tf,false)
         # struct constructor
-        if isa(f, CompositeKind)
+        if isstructtype(f)
             return f
         end
         # unknown/unhandled builtin
@@ -403,7 +424,7 @@ function a2t(a::AbstractVector)
     return tuple(a...)
 end
 
-function isconstantfunc(f, sv::StaticVarInfo)
+function isconstantfunc(f::ANY, sv::StaticVarInfo)
     if isa(f,TopNode)
         m = _basemod()
         return isconst(m, f.name) && isdefined(m, f.name) && f
@@ -440,12 +461,12 @@ end
 
 const isconstantref = isconstantfunc
 
-isvatuple(t::Tuple) = (n = length(t); n > 0 && isseqtype(t[n]))
+isvatuple(t::Tuple) = (n = length(t); n > 0 && isvarargtype(t[n]))
 
 const limit_tuple_depth = t->limit_tuple_depth_(t,0)
 
 const limit_tuple_depth_ = function (t,d::Int)
-    if isa(t,UnionKind)
+    if isa(t,UnionType)
         # also limit within Union types.
         # may have to recur into other stuff in the future too.
         return Union(limit_tuple_depth_(t.types,d)...)
@@ -463,12 +484,12 @@ const limit_tuple_type = function (t::Tuple)
     n = length(t)
     if n > MAX_TUPLETYPE_LEN
         last = t[n]
-        if isseqtype(last)
+        if isvarargtype(last)
             last = last.parameters[1]
         end
         tail = tuple(t[MAX_TUPLETYPE_LEN:(n-1)]..., last)
-        tail = tintersect(reduce(tmerge, None, tail), Any)
-        return tuple(t[1:(MAX_TUPLETYPE_LEN-1)]..., ...{tail})
+        tail = typeintersect(reduce(tmerge, None, tail), Any)
+        return tuple(t[1:(MAX_TUPLETYPE_LEN-1)]..., Vararg{tail})
     end
     return t
 end
@@ -477,7 +498,7 @@ function abstract_call_gf(f, fargs, argtypes, e)
     if length(argtypes)>1 && isa(argtypes[1],Tuple) && argtypes[2]===Int
         # allow tuple indexing functions to take advantage of constant
         # index arguments.
-        if f === Main.Base.ref
+        if f === Main.Base.getindex
             e.head = :call1
             return tupleref_tfunc(fargs, argtypes[1], argtypes[2])
         elseif f === Main.Base.next
@@ -488,6 +509,19 @@ function abstract_call_gf(f, fargs, argtypes, e)
             return (tupleref_tfunc(fargs, argtypes[1], argtypes[2]), Int)
         end
     end
+    if f === Main.Base.promote_type || f === Main.Base.typejoin
+        la = length(argtypes)
+        c = cell(la)
+        for i = 1:la
+            t = argtypes[i]
+            if isType(t) && !isa(t.parameters[1],TypeVar)
+                c[i] = t.parameters[1]
+            else
+                return Type
+            end
+        end
+        return Type{f(c...)}
+    end
     # don't consider more than N methods. this trades off between
     # compiler performance and generated code performance.
     # typically, considering many methods means spending lots of time
@@ -496,7 +530,7 @@ function abstract_call_gf(f, fargs, argtypes, e)
     # function, so we can still know that error() is always None.
     # here I picked 4.
     argtypes = limit_tuple_type(argtypes)
-    applicable = methods(f, argtypes, 4)
+    applicable = _methods(f, argtypes, 4)
     rettype = None
     if is(applicable,false)
         # this means too many methods matched
@@ -537,7 +571,7 @@ function abstract_call_gf(f, fargs, argtypes, e)
 end
 
 function invoke_tfunc(f, types, argtypes)
-    argtypes = tintersect(types,limit_tuple_type(argtypes))
+    argtypes = typeintersect(types,limit_tuple_type(argtypes))
     if is(argtypes,None)
         return None
     end
@@ -558,92 +592,98 @@ function invoke_tfunc(f, types, argtypes)
 end
 
 function abstract_call(f, fargs, argtypes, vtypes, sv::StaticVarInfo, e)
-    if isbuiltin(f)
-        if is(f,apply) && length(fargs)>0
+    if is(f,apply) && length(fargs)>0
+        if isType(argtypes[1]) && isleaftype(argtypes[1].parameters[1])
+            af = argtypes[1].parameters[1]
+        else
             af = isconstantfunc(fargs[1], sv)
-            if !is(af,false)
-                aargtypes = argtypes[2:]
-                if allp(x->isa(x,Tuple), aargtypes) &&
-                   !anyp(isvatuple, aargtypes[1:(length(aargtypes)-1)])
-                    e.head = :call1
-                    # apply with known func with known tuple types
-                    # can be collapsed to a call to the applied func
-                    at = length(aargtypes) > 0 ?
-                         limit_tuple_type(apply(tuple,aargtypes...)) : ()
-                    return abstract_call(_ieval(af), (), at, vtypes, sv, ())
-                end
-                af = _ieval(af)
-                if is(af,tuple) && length(fargs)==2
-                    # tuple(xs...)
-                    aat = aargtypes[1]
-                    if aat <: AbstractArray
-                        # tuple(array...)
-                        # TODO: > 1 array of the same type
-                        tn = AbstractArray.name
-                        while isa(aat, AbstractKind) || isa(aat, BitsKind) ||
-                            isa(aat, CompositeKind)
-                            if is(aat.name, tn)
-                                et = aat.parameters[1]
-                                if !isa(et,TypeVar)
-                                    return (et...)
-                                end
+        end
+        if !is(af,false)
+            aargtypes = argtypes[2:]
+            if all(x->isa(x,Tuple), aargtypes) &&
+                !any(isvatuple, aargtypes[1:(length(aargtypes)-1)])
+                e.head = :call1
+                # apply with known func with known tuple types
+                # can be collapsed to a call to the applied func
+                at = length(aargtypes) > 0 ?
+                     limit_tuple_type(apply(tuple,aargtypes...)) : ()
+                return abstract_call(_ieval(af), (), at, vtypes, sv, ())
+            end
+            af = _ieval(af)
+            if is(af,tuple) && length(fargs)==2
+                # tuple(xs...)
+                aat = aargtypes[1]
+                if aat <: AbstractArray
+                    # tuple(array...)
+                    # TODO: > 1 array of the same type
+                    tn = AbstractArray.name
+                    while isa(aat, DataType)
+                        if is(aat.name, tn)
+                            et = aat.parameters[1]
+                            if !isa(et,TypeVar)
+                                return (et...)
                             end
-                            if is(aat, Any)
-                                break
-                            end
-                            aat = aat.super
                         end
-                    end
-                    return Tuple
-                end
-            else
-                ft = abstract_eval(fargs[1], vtypes, sv)
-                if isType(ft)
-                    # TODO: improve abstract_call_constructor
-                    st = ft.parameters[1]
-                    if isa(st,TypeVar) && isa(st.ub,CompositeKind)
-                        return st.ub
-                    end
-                    if isa(st,CompositeKind)
-                        return st
+                        if is(aat, Any)
+                            break
+                        end
+                        aat = aat.super
                     end
                 end
+                return Tuple
             end
         end
-        if is(f,invoke) && length(fargs)>1
-            af = isconstantfunc(fargs[1], sv)
-            if !is(af,false) && (af=_ieval(af);isgeneric(af))
-                sig = argtypes[2]
-                if isa(sig,Tuple) && allp(isType, sig)
-                    sig = map(t->t.parameters[1], sig)
-                    return invoke_tfunc(af, sig, argtypes[3:])
-                end
-            end
-        end
-        if !is(f,apply) && isa(e,Expr) && (isa(f,Function) || isa(f,IntrinsicFunction))
-            e.head = :call1
-        end
-        if is(f,getfield)
-            val = isconstantref(e, sv)
-            if !is(val,false)
-                return abstract_eval_constant(_ieval(val))
-            end
-        end
-        rt = builtin_tfunction(f, fargs, argtypes)
-        #print("=> ", rt, "\n")
-        return rt
-    elseif isgeneric(f)
+    end
+    if isgeneric(f)
         return abstract_call_gf(f, fargs, argtypes, e)
-    else
-        #print("=> ", Any, "\n")
+    end
+    if is(f,invoke) && length(fargs)>1
+        af = isconstantfunc(fargs[1], sv)
+        if !is(af,false) && (af=_ieval(af);isgeneric(af))
+            sig = argtypes[2]
+            if isa(sig,Tuple) && all(isType, sig)
+                sig = map(t->t.parameters[1], sig)
+                return invoke_tfunc(af, sig, argtypes[3:])
+            end
+        end
+    end
+    if !is(f,apply) && isa(e,Expr) && (isa(f,Function) || isa(f,IntrinsicFunction))
+        e.head = :call1
+    end
+    if is(f,getfield)
+        val = isconstantref(e, sv)
+        if !is(val,false)
+            return abstract_eval_constant(_ieval(val))
+        end
+    end
+    if is(f,kwcall)
+        if length(argtypes) < 3
+            return None
+        end
+        if length(fargs) < 2
+            return Any
+        end
+        ff = isconstantfunc(fargs[1], sv)
+        if !(ff===false)
+            ff = _ieval(ff)
+            if isgeneric(ff) && isdefined(ff.env,:kwsorter)
+                # use the fact that kwcall(...) calls ff.env.kwsorter
+                kwcount = fargs[2]
+                posargt = argtypes[(4+2*kwcount):end]
+                return abstract_call_gf(ff.env.kwsorter, (), tuple(Tuple, posargt...), e)
+            end
+        end
         return Any
     end
+    rt = builtin_tfunction(f, fargs, argtypes)
+    #print("=> ", rt, "\n")
+    return rt
 end
 
 function abstract_eval_arg(a, vtypes, sv)
     t = abstract_eval(a, vtypes, sv)
     if isa(a,Symbol) || isa(a,SymbolNode)
-        t = tintersect(t,Any)  # remove Undef
+        t = typeintersect(t,Any)  # remove Undef
     end
     return t
 end
@@ -651,7 +691,7 @@ end
 function abstract_eval_call(e, vtypes, sv::StaticVarInfo)
     fargs = e.args[2:]
     argtypes = tuple([abstract_eval_arg(a, vtypes, sv) for a in fargs]...)
-    if anyp(x->is(x,None), argtypes)
+    if any(x->is(x,None), argtypes)
         return None
     end
     called = e.args[1]
@@ -666,10 +706,11 @@ function abstract_eval_call(e, vtypes, sv::StaticVarInfo)
         ft = abstract_eval(called, vtypes, sv)
         if isType(ft)
             st = ft.parameters[1]
-            if isa(st,TypeVar) && isa(st.ub,CompositeKind)
-                return st.ub
+            if isa(st,TypeVar)
+                st = st.ub
             end
-            if isa(st,CompositeKind)
+            if isa(st,DataType)
+                _methods(st,(),0)
                 if isgeneric(st) && isleaftype(st)
                     return abstract_call_gf(st, fargs, argtypes, e)
                 end
@@ -698,13 +739,19 @@ function abstract_eval(e::Expr, vtypes, sv::StaticVarInfo)
         else
             t = Any
         end
+        for i = 2:length(e.args)
+            abstract_eval(e.args[i], vtypes, sv)
+        end
     elseif is(e.head,:&)
         abstract_eval(e.args[1], vtypes, sv)
         t = Any
     elseif is(e.head,:static_typeof)
         t = abstract_eval(e.args[1], vtypes, sv)
         # intersect with Any to remove Undef
-        t = tintersect(t, Any)
+        t = typeintersect(t, Any)
+        if isa(t,UnionType)
+            t = typejoin(t.types...)
+        end
         if is(t,None)
         elseif isleaftype(t)
             t = Type{t}
@@ -727,6 +774,8 @@ function abstract_eval(e::Expr, vtypes, sv::StaticVarInfo)
                 t = Type{TypeVar(:_,t)}
             end
         end
+    elseif is(e.head,:method)
+        t = Function
     else
         t = Any
     end
@@ -742,16 +791,18 @@ function abstract_eval(e::TopNode, vtypes, sv::StaticVarInfo)
     return abstract_eval_global(_basemod(), e.name)
 end
 
-const _jl_Type_Array = Type{Array}
+const Type_Array = Type{Array}
 
 function abstract_eval_constant(x::ANY)
-    if isa(x,AbstractKind) || isa(x,BitsKind) || isa(x,CompositeKind) ||
-        isa(x,UnionKind) || isa(x,TypeConstructor)
+    if isa(x,DataType) || isa(x,UnionType) || isa(x,TypeConstructor)
         if is(x,Array)
-            return _jl_Type_Array
+            return Type_Array
         end
         return Type{x}
     end
+    #if isa(x,Tuple) && all(e->isa(e,Type), x)
+    #    return Type{x}
+    #end
     return typeof(x)
 end
 
@@ -789,6 +840,12 @@ function abstract_eval(s::Symbol, vtypes, sv::StaticVarInfo)
                 val = sp[i+1]
                 if isa(val,TypeVar)
                     # static param bound to typevar
+                    if Any <: val.ub
+                        # if the tvar does not refer to anything more specific
+                        # than Any, the static param might actually be an
+                        # integer, symbol, etc.
+                        return Any
+                    end
                     return Type{val}
                 end
                 return abstract_eval_constant(val)
@@ -815,7 +872,7 @@ type StateUpdate
     state::VarTable
 end
 
-function ref(x::StateUpdate, s::Symbol)
+function getindex(x::StateUpdate, s::Symbol)
     if is(x.var,s)
         return x.vtype
     end
@@ -839,7 +896,9 @@ function abstract_interpret(e::Expr, vtypes, sv::StaticVarInfo)
     elseif is(e.head,:gotoifnot)
         abstract_eval(e.args[1], vtypes, sv)
     elseif is(e.head,:method)
-        return StateUpdate(e.args[1], Function, vtypes)
+        fname = e.args[1]
+        if isa(fname,Expr); fname = fname.args[1]; end
+        return StateUpdate(fname, Function, vtypes)
     end
     return vtypes
 end
@@ -863,10 +922,10 @@ function type_too_complex(t::ANY, d)
     if d > MAX_TYPE_DEPTH
         return true
     end
-    if isa(t,UnionKind)
+    if isa(t,UnionType)
         p = t.types
-    elseif isa(t,CompositeKind) || isa(t,AbstractKind) || isa(t,BitsKind)
-        return false
+    elseif isa(t,DataType)
+        p = t.parameters
     elseif isa(t,Tuple)
         p = t
     elseif isa(t,TypeVar)
@@ -980,17 +1039,16 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
     tf = def.tfunc
     if !is(tf,())
         tfarr = tf::Array{Any,1}
-        for i = 1:2:length(tfarr)
+        for i = 1:3:length(tfarr)
             if typeseq(tfarr[i],atypes)
                 code = tfarr[i+1]
-                assert(isa(code, Tuple))
-                if code[5]
-                    curtype = code[3]
+                curtype = ccall(:jl_ast_rettype, Any, (Any,Any), def, code)
+                if tfarr[i+2]
                     redo = true
                     tfunc_idx = i+1
                     break
                 end
-                return (code, code[3])
+                return (code, curtype)
             end
         end
     end
@@ -1000,12 +1058,12 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
     #if dbg
     #    print("typeinf ", linfo.name, " ", object_id(ast0), "\n")
     #end
-    #print("typeinf ", linfo.name, " ", atypes, "\n")
-    # if isdefined(:stdout_stream)
-    #     write(stdout_stream, "typeinf ")
-    #     write(stdout_stream, string(linfo.name))
-    #     write(stdout_stream, string(atypes))
-    #     write(stdout_stream, '\n')
+    #print("typeinf ", linfo.name, " ", atypes, " ", linfo.file,":",linfo.line,"\n")
+    # if isdefined(:STDOUT)
+    #     write(STDOUT, "typeinf ")
+    #     write(STDOUT, string(linfo.name))
+    #     write(STDOUT, string(atypes))
+    #     write(STDOUT, '\n')
     # end
     #print("typeinf ", ast0, " ", sparams, " ", atypes, "\n")
 
@@ -1057,20 +1115,28 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
     recpts = IntSet()  # statements that depend recursively on our value
     W = IntSet()
     # initial set of pc
-    add(W,1)
+    add!(W,1)
     # initial types
     s[1] = ObjectIdDict()
     for v in vars
         s[1][v] = Undef
     end
     if la > 0
-        if is(atypes,Tuple)
-            atypes = tuple(NTuple{la,Any}..., Tuple[1])
-        end
         lastarg = ast.args[1][la]
         if is_rest_arg(lastarg)
-            s[1][args[la]] = limit_tuple_depth(atypes[la:])
+	    if atypes === Tuple
+                if la > 1
+                    atypes = tuple(NTuple{la-1,Any}..., Tuple[1])
+                end
+                s[1][args[la]] = Tuple
+            else
+                s[1][args[la]] = limit_tuple_depth(atypes[la:])
+            end
             la -= 1
+        else
+            if atypes === Tuple
+                atypes = tuple(NTuple{la,Any}..., Tuple[1])
+            end
         end
     end
     for i=1:la
@@ -1104,10 +1170,10 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
     handler_at = { () for i=1:n }
 
     while !isempty(W)
-        pc = choose(W)
+        pc = first(W)
         while true
             #print(pc,": ",s[pc],"\n")
-            del(W, pc)
+            delete!(W, pc, 0)
             if is(handler_at[pc],())
                 handler_at[pc] = cur_hand
             else
@@ -1120,7 +1186,7 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
                 if !(isa(frame.prev,CallStack) && frame.prev.recurred)
                     toprec = true
                 end
-                add(recpts, pc)
+                add!(recpts, pc)
                 #if dbg
                 #    show(pc); print(" recurred\n")
                 #end
@@ -1130,7 +1196,7 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
                 # propagate type info to exception handler
                 l = cur_hand[1]::Int
                 if stchanged(changes, s[l], vars)
-                    add(W, l)
+                    add!(W, l)
                     s[l] = stupdate(s[l], changes, vars)
                 end
             end
@@ -1150,14 +1216,14 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
                         # general case
                         handler_at[l] = cur_hand
                         if stchanged(changes, s[l], vars)
-                            add(W, l)
+                            add!(W, l)
                             s[l] = stupdate(s[l], changes, vars)
                         end
                     end
                 elseif is(hd,:type_goto)
                     l = findlabel(body,stmt.args[1])
                     if stchanged(changes, s[l], vars)
-                        add(W, l)
+                        add!(W, l)
                         s[l] = stupdate(s[l], changes, vars)
                     end
                 elseif is(hd,:return)
@@ -1168,7 +1234,7 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
                         if !(isa(frame.prev,CallStack) && frame.prev.recurred)
                             toprec = true
                         end
-                        add(recpts, pc)
+                        add!(recpts, pc)
                         #if dbg
                         #    show(pc); print(" recurred\n")
                         #end
@@ -1189,7 +1255,7 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
                             #    show(r)
                             #    print("\n")
                             #end
-                            add(W,r)
+                            add!(W,r)
                         end
                     end
                 elseif is(hd,:enter)
@@ -1225,23 +1291,23 @@ function typeinf(linfo::LambdaStaticData,atypes::Tuple,sparams::Tuple, def, cop)
         sv.vars = append_any(f_argnames(fulltree), fulltree.args[2][1])
         tuple_elim_pass(fulltree)
         linfo.inferred = true
+        fulltree = ccall(:jl_compress_ast, Any, (Any,Any), def, fulltree)
     end
-    
-    compr = ccall(:jl_compress_ast, Any, (Any, Any,), def, fulltree)
     
     if !redo
         if is(def.tfunc,())
             def.tfunc = {}
         end
-        compr = (compr[1],compr[2],compr[3],compr[4],rec)
-        push(def.tfunc::Array{Any,1}, atypes)
-        push(def.tfunc::Array{Any,1}, compr)
+        push!(def.tfunc::Array{Any,1}, atypes)
+        push!(def.tfunc::Array{Any,1}, fulltree)
+        push!(def.tfunc::Array{Any,1}, rec)
     else
-        def.tfunc[tfunc_idx] = (compr[1],compr[2],compr[3],compr[4],rec)
+        def.tfunc[tfunc_idx] = fulltree
+        def.tfunc[tfunc_idx+1] = rec
     end
     
     inference_stack = (inference_stack::CallStack).prev
-    return (compr, frame.result)
+    return (fulltree, frame.result)
 end
 
 function record_var_type(e::Symbol, t, decls)
@@ -1284,7 +1350,10 @@ function eval_annotate(e::Expr, vtypes, sv, decls, clo)
     end
     i0 = is(head,:method) ? 2 : 1
     for i=i0:length(e.args)
-        e.args[i] = eval_annotate(e.args[i], vtypes, sv, decls, clo)
+        subex = e.args[i]
+        if !(isa(subex,Number) || isa(subex,String))
+            e.args[i] = eval_annotate(subex, vtypes, sv, decls, clo)
+        end
     end
     e
 end
@@ -1309,7 +1378,7 @@ end
 eval_annotate(s, vtypes, sv, decls, clo) = s
 
 function eval_annotate(l::LambdaStaticData, vtypes, sv, decls, clo)
-    push(clo, l)
+    push!(clo, l)
     l
 end
 
@@ -1350,8 +1419,8 @@ function type_annotate(ast::Expr, states::Array{Any,1}, sv::ANY, rettype::ANY,
                 end
             end
             na = length(a.args[1])
-            typeinf(li, ntuple(na+1, i->(i>na ? (Tuple)[1] : Any)),
-                    li.sparams, li, false)
+            li.ast, _ = typeinf(li, ntuple(na+1, i->(i>na ? (Tuple)[1] : Any)),
+                                li.sparams, li, false)
         end
     end
 
@@ -1404,7 +1473,7 @@ function resolve_relative(sym, from, to, typ, orig)
         end
         m = _basemod()
         if is(from,m) || is(from,Core)
-            return _jl_tn(sym)
+            return tn(sym)
         end
     end
     return GetfieldNode(from, sym, typ)
@@ -1414,7 +1483,10 @@ end
 function resolve_globals(e::Expr, from, to, env1, env2)
     if !is(e.head,:line)
         for i=1:length(e.args)
-            e.args[i] = resolve_globals(e.args[i], from, to, env1, env2)
+            subex = e.args[i]
+            if !(isa(subex,Number) || isa(subex,String))
+                e.args[i] = resolve_globals(subex, from, to, env1, env2)
+            end
         end
     end
     e
@@ -1465,6 +1537,8 @@ function exprtype(x::ANY)
             return Any
         end
         return abstract_eval(x, (), sv)
+    elseif isa(x,QuoteNode)
+        return typeof(x.value)
     elseif isa(x,Type)
         return Type{x}
     elseif isa(x,LambdaStaticData)
@@ -1481,7 +1555,7 @@ function without_linenums(a::Array{Any,1})
     for x in a
         if (isa(x,Expr) && is(x.head,:line)) || isa(x,LineNumberNode)
         else
-            push(l, x)
+            push!(l, x)
         end
     end
     l
@@ -1493,19 +1567,31 @@ function effect_free(e)
         isa(e,TopNode) || isa(e,QuoteNode)
         return true
     end
-    if isa(e,Expr) && (e.head === :call || e.head === :call1)
-        ea = e.args
-        for a in ea
-            if !effect_free(a)
-                return false
-            end
+    if isa(e,Expr)
+        if e.head === :static_typeof
+            return true
         end
-        if isa(ea[1],TopNode)
-            n = ea[1].name
-            if (n === :getfield || n === :tuple || n === :tupleref ||
-                n === :tuplelen || n === :fieldtype)
-                return true
+        ea = e.args
+        if e.head === :call || e.head === :call1
+            for a in ea
+                if !effect_free(a)
+                    return false
+                end
             end
+            if isa(ea[1],TopNode)
+                n = ea[1].name
+                if (n === :getfield || n === :tuple || n === :tupleref ||
+                    n === :tuplelen || n === :fieldtype)
+                    return true
+                end
+            end
+        elseif e.head === :new
+            for a in ea
+                if !effect_free(a)
+                    return false
+                end
+            end
+            return true
         end
     end
     return false
@@ -1517,7 +1603,7 @@ end
 # static parameters are ok if all the static parameter values are leaf types,
 # meaning they are fully known.
 function inlineable(f, e::Expr, sv, enclosing_ast)
-    if !(isa(f,Function)||isa(f,CompositeKind)||isa(f,IntrinsicFunction))
+    if !(isa(f,Function) || isstructtype(f) || isa(f,IntrinsicFunction))
         return NF
     end
     argexprs = e.args[2:]
@@ -1535,7 +1621,7 @@ function inlineable(f, e::Expr, sv, enclosing_ast)
         isType(e.typ) && isleaftype(e.typ.parameters[1])
         return (e.typ.parameters[1],())
     end
-    if length(atypes)==2 && is(f,unbox) && isa(atypes[2],BitsKind)
+    if length(atypes)==2 && is(f,unbox) && isa(atypes[2],DataType)
         return (e.args[3],())
     end
     if isa(f,IntrinsicFunction)
@@ -1557,6 +1643,7 @@ function inlineable(f, e::Expr, sv, enclosing_ast)
         return NF
     end
     sp = meth[2]::Tuple
+    sp = tuple(sp..., meth[3].sparams...)
     spvals = { sp[i] for i in 2:2:length(sp) }
     for i=1:length(spvals)
         if isa(spvals[i],TypeVar)
@@ -1567,8 +1654,10 @@ function inlineable(f, e::Expr, sv, enclosing_ast)
     if is(ast,())
         return NF
     end
-    if isa(ast,Tuple)
-        ast = ccall(:jl_uncompress_ast, Any, (Any,), ast)
+    needcopy = true
+    if !isa(ast,Expr)
+        ast = ccall(:jl_uncompress_ast, Any, (Any,Any), meth[3], ast)
+        needcopy = false
     end
     ast = ast::Expr
     for vi in ast.args[2][2]
@@ -1614,10 +1703,10 @@ function inlineable(f, e::Expr, sv, enclosing_ast)
                 if occ > 1
                     vnew = unique_name(enclosing_ast)
                     add_variable(enclosing_ast, vnew, aeitype)
-                    push(stmts, Expr(:(=), {vnew, aei}, Any))
+                    push!(stmts, Expr(:(=), vnew, aei))
                     argexprs[i] = aeitype===Any ? vnew : SymbolNode(vnew,aeitype)
                 elseif !isType(aeitype) && !effect_free(aei)
-                    push(stmts, aei)
+                    push!(stmts, aei)
                 end
             end
         end
@@ -1625,7 +1714,7 @@ function inlineable(f, e::Expr, sv, enclosing_ast)
 
     # ok, substitute argument expressions for argument names in the body
     spnames = { sp[i].name for i=1:2:length(sp) }
-    expr = astcopy(expr)
+    if needcopy; expr = astcopy(expr); end
     mfrom = meth[3].module; mto = (inference_stack::CallStack).mod
     if !is(mfrom, mto)
         expr = resolve_globals(expr, mfrom, mto, args, spnames)
@@ -1633,20 +1722,22 @@ function inlineable(f, e::Expr, sv, enclosing_ast)
     return (sym_replace(expr, args, spnames, argexprs, spvals), stmts)
 end
 
-_jl_tn(sym::Symbol) =
+tn(sym::Symbol) =
     ccall(:jl_new_struct, Any, (Any,Any...), TopNode, sym, Any)
 
-const _jl_top_tupleref = _jl_tn(:tupleref)
-const _jl_top_tuple = _jl_tn(:tuple)
+const top_tupleref = tn(:tupleref)
+const top_tuple = tn(:tuple)
 
 function mk_tupleref(texpr, i)
-    e = :(($_jl_top_tupleref)($texpr, $i))
+    e = :(($top_tupleref)($texpr, $i))
     e.typ = exprtype(texpr)[i]
     e
 end
 
 function mk_tuplecall(args)
-    Expr(:call1, {_jl_top_tuple, args...}, tuple(map(exprtype, args)...))
+    e = Expr(:call1, top_tuple, args...)
+    e.typ = tuple(map(exprtype, args)...)
+    e
 end
 
 const basenumtype = Union(Int32,Int64,Float32,Float64,Complex64,Complex128,Rational)
@@ -1678,7 +1769,7 @@ function inlining_pass(e::Expr, sv, ast)
                 if isa(res[2],Array)
                     sts = res[2]::Array{Any,1}
                     for j = 1:length(sts)
-                        insert(eargs, i, sts[j])
+                        insert!(eargs, i, sts[j])
                         i += 1
                     end
                 end
@@ -1719,10 +1810,10 @@ function inlining_pass(e::Expr, sv, ast)
                 if isa(a1,basenumtype) || ((isa(a1,Symbol) || isa(a1,SymbolNode)) &&
                                            exprtype(a1) <: basenumtype)
                     if e.args[3]==2
-                        e.args = {_jl_tn(:*), a1, a1}
+                        e.args = {tn(:*), a1, a1}
                         f = *
                     elseif e.args[3]==3
-                        e.args = {_jl_tn(:*), a1, a1, a1}
+                        e.args = {tn(:*), a1, a1, a1}
                         f = *
                     end
                 end
@@ -1779,8 +1870,8 @@ function add_variable(ast, name, typ)
     vinf = {name,typ,2}
     locllist = ast.args[2][1]::Array{Any,1}
     vinflist = ast.args[2][2]::Array{Any,1}
-    push(locllist, name)
-    push(vinflist, vinf)
+    push!(locllist, name)
+    push!(vinflist, vinf)
 end
 
 const some_names = {:_var0, :_var1, :_var2, :_var3, :_var4, :_var5, :_var6,
@@ -1830,7 +1921,7 @@ function find_sa_vars(ast)
     for vi in ast.args[2][2]
         if (vi[3]&1)!=0
             # remove captured vars
-            del(av, vi[1])
+            delete!(av, vi[1], nothing)
         end
     end
     av
@@ -1888,7 +1979,7 @@ function tuple_elim_pass(ast::Expr)
                 continue
             end
 
-            del(body, i)  # remove tuple allocation
+            delete!(body, i)  # remove tuple allocation
             # convert tuple allocation to a series of local var assignments
             vals = cell(nv)
             n_ins = 0
@@ -1899,9 +1990,9 @@ function tuple_elim_pass(ast::Expr)
                 else
                     elty = exprtype(tupelt)
                     tmpv = unique_name(ast)
-                    tmp = Expr(:(=), {tmpv,tupelt}, Any)
+                    tmp = Expr(:(=), tmpv, tupelt)
                     add_variable(ast, tmpv, elty)
-                    insert(body, i+n_ins, tmp)
+                    insert!(body, i+n_ins, tmp)
                     vals[j] = SymbolNode(tmpv, elty)
                     n_ins += 1
                 end
@@ -1929,11 +2020,11 @@ function replace_tupleref(e, tupname, vals, sv, i0)
     end
 end
 
-function finfer(f, types)
+function finfer(f::Union(Function,DataType), types)
     x = methods(f,types)[1]
     (tree, ty) = typeinf(x[3], x[1], x[2])
-    if isa(tree,Tuple)
-        return ccall(:jl_uncompress_ast, Any, (Any,), tree)
+    if !isa(tree,Expr)
+        return ccall(:jl_uncompress_ast, Any, (Any,Any), x[3], tree)
     end
     tree
 end

@@ -1,11 +1,12 @@
-require("extras/iterators")
+require("iterators")
+
 using Iterators
 
 # aux function emulating a comprehension [x for x in f]
 function buildvec(f)
     v = Any[]
     for i = f
-        push(v, i)
+        push!(v, i)
     end
     return v
 end

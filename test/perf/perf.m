@@ -1,7 +1,9 @@
 function perf()
 
 warning off;
-maxNumCompThreads(1);
+if exist('OCTAVE_VERSION') == 0
+    maxNumCompThreads(1);
+end
 
 function assert(bool)
    if ~bool
@@ -55,16 +57,16 @@ timeit('parse_int', @parseintperf, 1000)
 
 %% array constructors %%
 
-o = ones(200,200);
-assert(all(o) == 1)
+%o = ones(200,200);
+%assert(all(o) == 1)
 % timeit('ones', @ones, 200, 200)
 
 %% matmul and transpose %%
 
-function oo = matmul(o)
-    oo = o * o.';
-end
-assert(all(matmul(o) == 200))
+%function oo = matmul(o)
+%    oo = o * o.';
+%end
+%assert(all(matmul(o) == 200))
 % timeit('AtA', @matmul, o)
 
 %% mandelbrot set: complex arithmetic and comprehensions %%
@@ -145,6 +147,19 @@ end
 s = pisum(true);
 assert(abs(s-1.644834071848065) < 1e-12);
 timeit('pi_sum',@pisum, true)
+
+%% slow pi series, vectorized %%
+
+function s = pisumvec(ignore)
+    a = [1:10000]
+    for j=1:500
+        s = sum( 1./(a.^2));
+    end
+end
+
+%s = pisumvec(true);
+%assert(abs(s-1.644834071848065) < 1e-12);
+%timeit('pi_sum_vec',@pisumvec, true)
 
 %% random matrix statistics %%
 

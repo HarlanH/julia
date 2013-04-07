@@ -17,12 +17,7 @@
 	((memq (car s1) s2) (diff (cdr s1) s2))
 	(else               (cons (car s1) (diff (cdr s1) s2)))))
 
-(define (unique lst)
-  (if (null? lst)
-      '()
-      (if (memq (car lst) (cdr lst))
-	  (unique (cdr lst))
-	  (cons (car lst) (unique (cdr lst))))))
+(define (unique lst) (delete-duplicates lst))
 
 (define (has-dups lst)
   (if (null? lst)
@@ -36,6 +31,16 @@
 	   (any (lambda (x) (contains p x))
 		expr))))
 
+(define (butlast lst)
+  (if (or (null? lst) (null? (cdr lst)))
+      '()
+      (cons (car lst) (butlast (cdr lst)))))
+
+(define (last lst)
+  (if (null? (cdr lst))
+      (car lst)
+      (last (cdr lst))))
+
 (define *gensyms* '())
 (define *current-gensyms* '())
 (define *gensy-counter* 1)
@@ -47,5 +52,9 @@
 	g)
       (begin0 (car *current-gensyms*)
 	      (set! *current-gensyms* (cdr *current-gensyms*)))))
+(define (named-gensy name)
+  (let ((g (symbol (string name "#" *gensy-counter*))))
+    (set! *gensy-counter* (+ *gensy-counter* 1))
+    g))
 (define (reset-gensyms)
   (set! *current-gensyms* *gensyms*))

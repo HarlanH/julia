@@ -6,14 +6,14 @@ abstract LongTuple
 abstract LongExpr
 abstract UndefRefTag
 
-const _jl_ser_version = 1 # do not make changes without bumping the version #!
-const _jl_ser_tag = ObjectIdDict()
-const _jl_deser_tag = ObjectIdDict()
+const ser_version = 1 # do not make changes without bumping the version #!
+const ser_tag = ObjectIdDict()
+const deser_tag = ObjectIdDict()
 let i = 2
-    global _jl_ser_tag, _jl_deser_tag
+    global ser_tag, deser_tag
     for t = {Symbol, Int8, Uint8, Int16, Uint16, Int32, Uint32,
              Int64, Uint64, Int128, Uint128, Float32, Float64, Char, Ptr,
-             AbstractKind, UnionKind, BitsKind, CompositeKind, Function,
+             DataType, UnionType, Function,
              Tuple, Array, Expr, LongSymbol, LongTuple, LongExpr,
              LineNumberNode, SymbolNode, LabelNode, GotoNode,
              QuoteNode, TopNode, TypeVar, Box, LambdaStaticData,
@@ -36,26 +36,28 @@ let i = 2
              false, true, nothing, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
              12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
              28, 29, 30, 31, 32}
-        _jl_ser_tag[t] = int32(i)
-        _jl_deser_tag[int32(i)] = t
+        ser_tag[t] = int32(i)
+        deser_tag[int32(i)] = t
         i += 1
     end
 end
 
 # tags >= this just represent themselves, their whole representation is 1 byte
-const _jl_VALUE_TAGS = _jl_ser_tag[()]
+const VALUE_TAGS = ser_tag[()]
 
-writetag(s, x) = write(s, uint8(_jl_ser_tag[x]))
+writetag(s, x) = write(s, uint8(ser_tag[x]))
 
 function write_as_tag(s, x)
-    t = _jl_ser_tag[x]
-    if t < _jl_VALUE_TAGS
+    t = ser_tag[x]
+    if t < VALUE_TAGS
         write(s, uint8(0))
     end
     write(s, uint8(t))
 end
 
 serialize(s, x::Bool) = write_as_tag(s, x)
+
+serialize(s, ::Ptr) = error("cannot serialize a pointer")
 
 serialize(s, ::()) = write_as_tag(s, ())
 
@@ -74,7 +76,7 @@ function serialize(s, t::Tuple)
 end
 
 function serialize(s, x::Symbol)
-    if has(_jl_ser_tag, x)
+    if has(ser_tag, x)
         return write_as_tag(s, x)
     end
     name = string(x)
@@ -91,10 +93,10 @@ end
 
 function serialize_array_data(s, a)
     elty = eltype(a)
-    if elty === Bool && numel(a)>0
+    if elty === Bool && length(a)>0
         last = a[1]
         count = 1
-        for i = 2:numel(a)
+        for i = 2:length(a)
             if a[i] != last || count == 127
                 write(s, uint8((uint8(last)<<7) | count))
                 last = a[i]
@@ -114,10 +116,10 @@ function serialize(s, a::Array)
     elty = eltype(a)
     serialize(s, elty)
     serialize(s, size(a))
-    if isa(elty,BitsKind)
+    if isbits(elty)
         serialize_array_data(s, a)
     else
-        for i = 1:numel(a)
+        for i = 1:length(a)
             if isdefined(a, i)
                 serialize(s, a[i])
             else
@@ -128,7 +130,7 @@ function serialize(s, a::Array)
 end
 
 function serialize{T,N,A<:Array}(s, a::SubArray{T,N,A})
-    if !isa(T,BitsKind) || stride(a,1)!=1
+    if !isbits(T) || stride(a,1)!=1
         return serialize(s, copy(a))
     end
     writetag(s, Array)
@@ -158,7 +160,7 @@ function serialize(s, m::Module)
     serialize(s, full_name(m))
 end
 
-function _jl_lambda_number(l::LambdaStaticData)
+function lambda_number(l::LambdaStaticData)
     # a hash function that always gives the same number to the same
     # object on the same machine, and is unique over all machines.
     hash(uint64(object_id(l))+(uint64(myid())<<44))
@@ -201,11 +203,21 @@ end
 
 function serialize(s, linfo::LambdaStaticData)
     writetag(s, LambdaStaticData)
-    serialize(s, _jl_lambda_number(linfo))
+    serialize(s, lambda_number(linfo))
     serialize(s, linfo.ast)
+    if isdefined(linfo.def, :roots)
+        serialize(s, linfo.def.roots)
+    else
+        serialize(s, {})
+    end
     serialize(s, linfo.sparams)
     serialize(s, linfo.inferred)
     serialize(s, linfo.module)
+    if isdefined(linfo, :capt)
+        serialize(s, linfo.capt)
+    else
+        serialize(s, nothing)
+    end
 end
 
 function serialize_type_data(s, t)
@@ -220,40 +232,43 @@ function serialize_type_data(s, t)
     end
 end
 
-function serialize(s, t::Union(AbstractKind,BitsKind,CompositeKind))
-    if has(_jl_ser_tag,t)
+function serialize(s, t::DataType)
+    if has(ser_tag,t)
         write_as_tag(s, t)
     else
-        writetag(s, AbstractKind)
+        writetag(s, DataType)
+        write(s, uint8(0))
         serialize_type_data(s, t)
     end
 end
 
-function serialize_type(s, t::Union(CompositeKind,BitsKind))
-    if has(_jl_ser_tag,t)
+function serialize_type(s, t::DataType)
+    if has(ser_tag,t)
         writetag(s, t)
     else
-        writetag(s, typeof(t))
+        writetag(s, DataType)
+        write(s, uint8(1))
         serialize_type_data(s, t)
     end
 end
 
 function serialize(s, x)
-    if has(_jl_ser_tag,x)
+    if has(ser_tag,x)
         return write_as_tag(s, x)
     end
     t = typeof(x)
-    if isa(t,BitsKind)
-        serialize_type(s, t)
+    serialize_type(s, t)
+    if length(t.names)==0 && t.size>0
         write(s, x)
-    elseif isa(t,CompositeKind)
-        serialize_type(s, t)
-        serialize(s, length(t.names))
-        for n = t.names
-            serialize(s, getfield(x, n))
-        end
     else
-        error(x," is not serializable")
+        serialize(s, length(t.names))
+        for n in t.names
+            if isdefined(x, n)
+                serialize(s, getfield(x, n))
+            else
+                writetag(s, UndefRefTag)
+            end
+        end
     end
 end
 
@@ -265,10 +280,10 @@ end
 
 function handle_deserialize(s, b)
     if b == 0
-        return _jl_deser_tag[int32(read(s, Uint8))]
+        return deser_tag[int32(read(s, Uint8))]
     end
-    tag = _jl_deser_tag[b]
-    if b >= _jl_VALUE_TAGS
+    tag = deser_tag[b]
+    if b >= VALUE_TAGS
         return tag
     elseif is(tag,Tuple)
         len = int32(read(s, Uint8))
@@ -294,7 +309,7 @@ function deserialize(s, ::Type{Module})
     m
 end
 
-const _jl_known_lambda_data = Dict()
+const known_lambda_data = Dict()
 
 function deserialize(s, ::Type{Function})
     b = read(s, Uint8)
@@ -318,16 +333,22 @@ end
 function deserialize(s, ::Type{LambdaStaticData})
     lnumber = deserialize(s)
     ast = deserialize(s)
+    roots = deserialize(s)
     sparams = deserialize(s)
     infr = deserialize(s)
     mod = deserialize(s)
-    if has(_jl_known_lambda_data, lnumber)
-        return _jl_known_lambda_data[lnumber]
+    capt = deserialize(s)
+    if has(known_lambda_data, lnumber)
+        return known_lambda_data[lnumber]
     else
         linfo = ccall(:jl_new_lambda_info, Any, (Any, Any), ast, sparams)
         linfo.inferred = infr
         linfo.module = mod
-        _jl_known_lambda_data[lnumber] = linfo
+        linfo.roots = roots
+        if !is(capt,nothing)
+            linfo.capt = capt
+        end
+        known_lambda_data[lnumber] = linfo
         return linfo
     end
 end
@@ -335,7 +356,7 @@ end
 function deserialize(s, ::Type{Array})
     elty = deserialize(s)
     dims = deserialize(s)::Dims
-    if isa(elty,BitsKind)
+    if isbits(elty)
         n = prod(dims)::Int
         if elty === Bool && n>0
             A = Array(Bool, dims)
@@ -355,9 +376,9 @@ function deserialize(s, ::Type{Array})
         end
     end
     A = Array(elty, dims)
-    for i = 1:numel(A)
+    for i = 1:length(A)
         tag = int32(read(s, Uint8))
-        if tag==0 || !is(_jl_deser_tag[tag], UndefRefTag)
+        if tag==0 || !is(deser_tag[tag], UndefRefTag)
             A[i] = handle_deserialize(s, tag)
         end
     end
@@ -370,7 +391,8 @@ deserialize(s, ::Type{LongExpr}) = deserialize_expr(s, read(s, Int32))
 function deserialize_expr(s, len)
     hd = deserialize(s)::Symbol
     ty = deserialize(s)
-    e = expr(hd, { deserialize(s) for i=1:len })
+    e = Expr(hd)
+    e.args = { deserialize(s) for i=1:len }
     e.typ = ty
     e
 end
@@ -383,58 +405,56 @@ function deserialize(s, ::Type{TypeVar})
     TypeVar(name, lb, ub)
 end
 
-function deserialize(s, ::Type{UnionKind})
+function deserialize(s, ::Type{UnionType})
     nf_expected = deserialize(s)
     types = deserialize(s)
     Union(types...)
 end
 
-function deserialize(s, ::Type{AbstractKind})
+function deserialize(s, ::Type{DataType})
+    form = read(s, Uint8)
     name = deserialize(s)::Symbol
     mod = deserialize(s)::Module
     params = deserialize(s)
     ty = eval(mod,name)
     if is(params,())
-        return ty
+        t = ty
+    else
+        t = apply_type(ty, params...)
     end
-    apply_type(ty, params...)
+    if form == 0
+        return t
+    end
+    deserialize(s, t)
 end
 
-function deserialize(s, ::Union(Type{CompositeKind}, Type{BitsKind}))
-    t = deserialize(s, AbstractKind)
-    # allow delegation to more specialized method
-    return deserialize(s, t)
-end
+deserialize{T}(s, ::Type{Ptr{T}}) = pointer(T, 0)
 
-# default bits deserializer
-deserialize(s, t::BitsKind) = read(s, t)
-
-# default structure deserializer
-function deserialize(s, t::CompositeKind)
+# default DataType deserializer
+function deserialize(s, t::DataType)
+    if length(t.names)==0 && t.size>0
+        # bits type
+        return read(s, t)
+    end
     nf_expected = deserialize(s)
     nf = length(t.names)
     if nf == 0
         return ccall(:jl_new_struct, Any, (Any,Any...), t)
-    elseif nf == 1
-        f1 = deserialize(s)
-        ccall(:jl_new_struct, Any, (Any,Any...), t, f1)
-    elseif nf == 2
-        f1 = deserialize(s)
-        f2 = deserialize(s)
-        ccall(:jl_new_struct, Any, (Any,Any...), t, f1, f2)
-    elseif nf == 3
+    elseif nf == 1 && !t.mutable
+        return ccall(:jl_new_struct, Any, (Any,Any...), t, deserialize(s))
+    elseif nf == 2 && !t.mutable
         f1 = deserialize(s)
         f2 = deserialize(s)
-        f3 = deserialize(s)
-        ccall(:jl_new_struct, Any, (Any,Any...), t, f1, f2, f3)
-    elseif nf == 4
-        f1 = deserialize(s)
-        f2 = deserialize(s)
-        f3 = deserialize(s)
-        f4 = deserialize(s)
-        ccall(:jl_new_struct, Any, (Any,Any...), t, f1, f2, f3, f4)
+        return ccall(:jl_new_struct, Any, (Any,Any...), t, f1, f2)
+        # TODO: handle immutable
     else
-        f = ntuple(nf, i->deserialize(s))
-        ccall(:jl_new_structt, Any, (Any,Any), t, f)
+        x = ccall(:jl_new_struct_uninit, Any, (Any,), t)
+        for n in t.names
+            tag = int32(read(s, Uint8))
+            if tag==0 || !is(deser_tag[tag], UndefRefTag)
+                setfield(x, n, handle_deserialize(s, tag))
+            end
+        end
+        return x
     end
 end

@@ -43,12 +43,12 @@ export
 #   Z_BIG_BUFSIZE,
 #   ZFileOffset
 
-load("zlib_h")
+include("zlib_h.jl")
 
 # zlib functions
 
 # Returns the maximum size of the compressed output buffer for a given uncompressed input size
-compress_bound(input_size::Uint) = ccall(dlsym(_zlib, :compressBound), Uint, (Uint, ), input_size)
+compress_bound(input_size::Uint) = ccall((:compressBound, _zlib), Uint, (Uint, ), input_size)
 compress_bound(input_size::Integer) = compress_bound(convert(Uint, input_size))
 
 # Compress
@@ -57,7 +57,7 @@ function compress(source::Array{Uint8}, level::Int32)
     nb = compress_to_buffer(source, dest, level)
 
     # Shrink the buffer to the actual compressed size
-    return grow(dest, nb-length(dest))
+    return resize!(dest, nb)
 end
 compress(source::Array{Uint8}, level::Integer) = compress(source, int32(level))
 compress(source::Array{Uint8}) = compress(source, Z_DEFAULT_COMPRESSION)
@@ -72,7 +72,7 @@ function compress_to_buffer(source::Array{Uint8}, dest::Array{Uint8}, level::Int
     dest_buf_size = Uint[length(dest)]
 
     # Compress the input
-    ret = ccall(dlsym(_zlib, :compress2), Int32, (Ptr{Uint8}, Ptr{Uint}, Ptr{Uint}, Uint, Int32),
+    ret = ccall((:compress2, _zlib), Int32, (Ptr{Uint8}, Ptr{Uint}, Ptr{Uint}, Uint, Int32),
                 dest, dest_buf_size, source, length(source), int32(level))
 
     if ret != Z_OK
@@ -108,12 +108,12 @@ function uncompress(source::Array{Uint8}, uncompressed_size::Int)
             # Z_BUF_ERROR: resize buf, try again
             # Note: resizing by powers of 2 seems to be more efficient at allocating memory
             uncompressed_size = nextpow2(uncompressed_size*2)
-            grow(dest, uncompressed_size-length(dest))
+            resize!(dest, uncompressed_size)
         end
     end
 
     # Shrink the buffer to the actual uncompressed size
-    return grow(dest, sz-length(dest))
+    return resize!(dest, sz)
 end
 uncompress(source::Array{Uint8}) = uncompress(source, nextpow2(length(source)<<1))
 
@@ -127,7 +127,7 @@ function uncompress_to_buffer(source::Array{Uint8}, dest::Array{Uint8})
     dest_buf_size = Uint[uncompressed_size]
 
     # Uncompress the input
-    ret = ccall(dlsym(_zlib, :uncompress), Int32, (Ptr{Uint}, Ptr{Uint}, Ptr{Uint}, Uint),
+    ret = ccall((:uncompress, _zlib), Int32, (Ptr{Uint}, Ptr{Uint}, Ptr{Uint}, Uint),
                 dest, dest_buf_size, source, length(source))
 
     if ret != Z_OK

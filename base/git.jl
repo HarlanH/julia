@@ -15,12 +15,49 @@ dirty(paths) = !success(`git diff --quiet HEAD -- $paths`)
 staged(paths) = !success(`git diff --quiet --cached -- $paths`)
 unstaged(paths) = !success(`git diff --quiet -- $paths`)
 
-attached() = success(`git symbolic-ref -q HEAD` > "/dev/null")
+attached() = success(`git symbolic-ref -q HEAD` > SpawnNullStream())
 branch() = readchomp(`git rev-parse --symbolic-full-name --abbrev-ref HEAD`)
+head() = readchomp(`git rev-parse HEAD`)
+
+immutable State
+    head::ASCIIString
+    index::ASCIIString
+    work::ASCIIString
+end
+
+function snapshot()
+    head = readchomp(`git rev-parse HEAD`)
+    index = readchomp(`git write-tree`)
+    work = try
+        run(`git add --all`)
+        run(`git add .`)
+        readchomp(`git write-tree`)
+    finally
+        run(`git read-tree $index`) # restore index
+    end
+    State(head, index, work)
+end
+
+function restore(s::State)
+    run(`git reset -q --`)               # unstage everything
+    run(`git read-tree $(s.work)`)       # move work tree to index
+    run(`git checkout-index -fa`)        # check the index out to work
+    run(`git clean -qdf`)                # remove everything else
+    run(`git read-tree $(s.index)`)      # restore index
+    run(`git reset -q --soft $(s.head)`) # restore head
+end
+
+function transact(f::Function)
+    state = snapshot()
+    try f() catch
+        restore(state)
+        rethrow()
+    end
+end
 
 function each_tagged_version()
-    git_dir = abs_path(dir())
-    @task for line in each_line(`git --git-dir=$git_dir show-ref --tags`)
+    git_dir = abspath(dir())
+    @task for line in eachline(`git --git-dir=$git_dir show-ref --tags`)
         m = match(r"^([0-9a-f]{40}) refs/tags/(v\S+)$", line)
         if m != nothing && ismatch(Base.VERSION_REGEX, m.captures[2])
             produce((convert(VersionNumber,m.captures[2]),m.captures[1]))
@@ -31,7 +68,7 @@ each_tagged_version(dir::String) = cd(each_tagged_version,dir)
 
 function each_submodule(f::Function, recursive::Bool, dir::ByteString)
     cmd = `git submodule foreach --quiet 'echo "$name $path $sha1"'`
-    for line in each_line(cmd)
+    for line in eachline(cmd)
         name, path, sha1 = match(r"^(.*) (.*) ([0-9a-f]{40})$", line).captures
         cd(dir) do
             f(name, path, sha1)
@@ -47,12 +84,12 @@ function each_submodule(f::Function, recursive::Bool, dir::ByteString)
         end
     end
 end
-each_submodule(f::Function, r::Bool) = each_submodule(f, r, cwd())
+each_submodule(f::Function, r::Bool) = each_submodule(f, r, pwd())
 
 function read_config(file::String)
     cfg = Dict()
     # TODO: use --null option for better handling of weird values.
-    for line in each_line(`git config -f $file --get-regexp '.*'`)
+    for line in eachline(`git config -f $file --get-regexp '.*'`)
         key, val = match(r"^(\S+)\s+(.*)$", line).captures
         cfg[key] = has(cfg,key) ? [cfg[key],val] : val
     end
@@ -61,9 +98,11 @@ end
 
 # TODO: provide a clean way to avoid this disaster
 function read_config_blob(blob::String)
-    tmp = tmpnam()
-    open(tmp,"w") do io
+    tmp, io = mktemp()
+    try
         write(io, readall(`git cat-file blob $blob`))
+    finally
+        close(io)
     end
     cfg = read_config(tmp)
     run(`rm -f tmp`)
@@ -71,7 +110,7 @@ function read_config_blob(blob::String)
 end
 
 function write_config(file::String, cfg::Dict)
-    tmp = tmpnam()
+    tmp = tempname()
     for key in sort!(keys(cfg))
         val = cfg[key]
         if isa(val,Array)
@@ -82,8 +121,10 @@ function write_config(file::String, cfg::Dict)
             run(`git config -f $tmp $key $val`)
         end
     end
-    open(file,"w") do io
-        print(io,readall(tmp))
+    if isfile(tmp)
+        open(file,"w") do io
+            print(io,readall(tmp))
+        end
     end
 end
 
@@ -93,7 +134,7 @@ function config_sections(cfg::Dict)
     sections = Set{ByteString}()
     for (key,_) in cfg
         m = match(r"^(.+)\.", key)
-        if m != nothing add(sections,m.captures[1]) end
+        if m != nothing add!(sections,m.captures[1]) end
     end
     sections
 end
@@ -106,9 +147,9 @@ function merge_configs(Bc::Dict, Lc::Dict, Rc::Dict)
     # expunge removed submodules from left and right sides
     deleted = Set{ByteString}()
     for section in Bs - Ls & Rs
-        filter!((k,v)->!begins_with(k,"$section."),Lc)
-        filter!((k,v)->!begins_with(k,"$section."),Rc)
-        add(deleted, section)
+        filter!((k,v)->!beginswith(k,"$section."),Lc)
+        filter!((k,v)->!beginswith(k,"$section."),Rc)
+        add!(deleted, section)
     end
     # merge the remaining config key-value pairs
     cfg = Dict()

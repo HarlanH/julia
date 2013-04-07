@@ -1,438 +1,410 @@
-## standard sort comparisons ##
+module Sort
 
-_jl_fp_pos_lt(x::Float32, y::Float32) = slt_int(unbox(Float32,x),unbox(Float32,y))
-_jl_fp_pos_lt(x::Float64, y::Float64) = slt_int(unbox(Float64,x),unbox(Float64,y))
-_jl_fp_pos_le(x::Float32, y::Float32) = sle_int(unbox(Float32,x),unbox(Float32,y))
-_jl_fp_pos_le(x::Float64, y::Float64) = sle_int(unbox(Float64,x),unbox(Float64,y))
+import
+    Base.sort,
+    Base.sort!,
+    Base.issorted,
+    Base.sortperm
 
-_jl_fp_neg_lt(x::Float32, y::Float32) = slt_int(unbox(Float32,y),unbox(Float32,x))
-_jl_fp_neg_lt(x::Float64, y::Float64) = slt_int(unbox(Float64,y),unbox(Float64,x))
-_jl_fp_neg_le(x::Float32, y::Float32) = sle_int(unbox(Float32,y),unbox(Float32,x))
-_jl_fp_neg_le(x::Float64, y::Float64) = sle_int(unbox(Float64,y),unbox(Float64,x))
+export # also exported by Base
+    sort,
+    sort!,
+    sortby,
+    sortby!,
+    sortperm,
+    select,
+    select!,
+    issorted,
+    searchsortedfirst,
+    searchsortedlast,
+    InsertionSort,
+    QuickSort,
+    MergeSort,
+    TimSort
 
-## internal sorting functionality ##
+export # not exported by Base
+    Ordering, Algorithm,
+    Forward, By, Lt, lt,
+    # Reverse, # TODO: clashes with Reverse iterator
+    DEFAULT_UNSTABLE,
+    DEFAULT_STABLE,
+    SMALL_ALGORITHM,
+    SMALL_THRESHOLD
 
-macro _jl_sort_functions(suffix, lt, args...)
-insertionsort = esc(symbol("_jl_insertionsort$suffix"))
-quicksort = esc(symbol("_jl_quicksort$suffix"))
-mergesort = esc(symbol("_jl_mergesort$suffix"))
-pivot_middle = esc(symbol("_jl_pivot_middle$suffix"))
-lt = @eval (a,b)->$lt
-quote
+# not exported
+    # selectby
+    # selectby!
+    # sortpermby
 
-# sorting should be stable
-# Thus, if a permutation is required, or records are being sorted
-# a stable sort should be used.
-# If only numbers are being sorted, a faster quicksort can be used.
+## notions of element ordering ##
 
-# fast sort for small arrays
-function ($insertionsort)($(args...), a::AbstractVector, lo::Int, hi::Int)
-    for i = lo+1:hi
-        j = i
-        x = a[i]
-        while j > lo
-            if $(lt(:x, :(a[j-1])))
-                a[j] = a[j-1]
-                j -= 1
-                continue
-            end
-            break
-        end
-        a[j] = x
+abstract Ordering
+
+type Forward <: Ordering end
+type Reverse <: Ordering end
+immutable By <: Ordering by::Function end
+immutable Lt <: Ordering lt::Function end
+
+lt(o::Forward, a, b) = isless(a,b)
+lt(o::Reverse, a, b) = isless(b,a)
+lt(o::By,      a, b) = isless(o.by(a),o.by(b))
+lt(o::Lt,      a, b) = o.lt(a,b)
+
+## functions requiring only ordering ##
+
+function issorted(itr, o::Ordering)
+    state = start(itr)
+    done(itr,state) && return true
+    prev, state = next(itr, state)
+    while !done(itr, state)
+        this, state = next(itr, state)
+        lt(o, this, prev) && return false
+        prev = this
     end
-    return a
+    return true
 end
+issorted{T<:Ordering}(itr, ::Type{T}) = issorted(itr, T())
+issorted             (itr)            = issorted(itr, Forward())
 
-# permutes an auxilliary array mirroring the sort
-function ($insertionsort)($(args...), a::AbstractVector, p::AbstractVector{Int}, lo::Int, hi::Int)
-    for i = lo+1:hi
-        j = i
-        x = a[i]
-        xp = p[i]
-        while j > lo
-            if $(lt(:x, :(a[j-1])))
-                a[j] = a[j-1]
-                p[j] = p[j-1]
-                j -= 1
-                continue
-            end
-            break
-        end
-        a[j] = x
-        p[j] = xp
-    end
-    return a, p
-end
-
-($pivot_middle)(a,b,c) = $(lt(:a,:b)) ? ($(lt(:b,:c)) ? b : c) : ($(lt(:a,:c)) ? a : c)
-
-# very fast but unstable
-function ($quicksort)($(args...), a::AbstractVector, lo::Int, hi::Int)
-    while hi > lo
-        if hi-lo <= 20
-            return $(expr(:call, insertionsort, args..., :a, :lo, :hi))
-        end
+function select!(v::AbstractVector, k::Int, lo::Int, hi::Int, o::Ordering)
+    lo <= k <= hi || error("select index $k is out of range $lo:$hi")
+    while lo < hi
+        pivot = v[(lo+hi)>>>1]
         i, j = lo, hi
-        # pivot = (a[lo]+a[hi])/2                                   # 1.14x
-          pivot = a[(lo+hi)>>>1]                                    # 1.15x
-        # pivot = (a[lo]+a[hi]+a[(lo+hi)>>>1])/3                    # 1.16x
-        # pivot = _jl_pivot_middle(a[lo], a[hi], a[(lo+hi)>>>1])    # 1.23x
-        # pivot = a[randival(lo,hi)]                                # 1.28x
-        while i <= j
-            while $(lt(:(a[i]), :pivot)); i += 1; end
-            while $(lt(:pivot, :(a[j]))); j -= 1; end
-            if i <= j
-                a[i], a[j] = a[j], a[i]
-                i += 1
+        while true
+            while lt(o, v[i], pivot); i += 1; end
+            while lt(o, pivot, v[j]); j -= 1; end
+            i <= j || break
+            v[i], v[j] = v[j], v[i]
+            i += 1; j -= 1
+        end
+        if k <= j
+            hi = j
+        elseif i <= k
+            lo = i
+        else
+            return pivot
+        end
+    end
+    return v[lo]
+end
+select!             (v::AbstractVector, k::Int, o::Ordering) = select!(v, k, 1, length(v), o)
+select!{T<:Ordering}(v::AbstractVector, k::Int, ::Type{T})   = select!(v, k, T())
+select!             (v::AbstractVector, k::Int)              = select!(v, k, Forward)
+
+select             (v::AbstractVector, k::Int, o::Ordering) = select!(copy(v), k, o)
+select{T<:Ordering}(v::AbstractVector, k::Int, ::Type{T})   = select (v,       k, T())
+select             (v::AbstractVector, k::Int)              = select!(copy(v), k)
+
+for s in {:select!, :select}
+    @eval begin
+        $s(v::AbstractVector, k::Int, lt::Function)  = $s(v, k, Sort.Lt(lt))
+        $s(lt::Function, v::AbstractVector, k::Int)  = $s(v, k, lt)
+    end
+end
+
+for s in {:selectby!, :selectby}
+    @eval begin
+        $s(v::AbstractVector, k::Int, by::Function)  = $s(v, k, Sort.By(by))
+        $s(by::Function, v::AbstractVector, k::Int)  = $s(v, k, by)
+    end
+end
+
+# reference on sorted binary search:
+#   http://www.tbray.org/ongoing/When/200x/2003/03/22/Binary
+
+# index of the first value of vector a that is greater than or equal to x;
+# returns length(v)+1 if x is greater than all values in v.
+function searchsortedfirst(v::AbstractVector, x, lo::Int, hi::Int, o::Ordering)
+    lo = lo-1
+    hi = hi+1
+    while lo < hi-1
+        m = (lo+hi)>>>1
+        if lt(o, v[m], x)
+            lo = m
+        else
+            hi = m
+        end
+    end
+    return hi
+end
+
+# index of the last value of vector a that is less than or equal to x;
+# returns 0 if x is less than all values of v.
+function searchsortedlast(v::AbstractVector, x, lo::Int, hi::Int, o::Ordering)
+    lo = lo-1
+    hi = hi+1
+    while lo < hi-1
+        m = (lo+hi)>>>1
+        if lt(o, x, v[m])
+            hi = m
+        else
+            lo = m
+        end
+    end
+    return lo
+end
+
+for s in {:searchsortedfirst, :searchsortedlast}
+    @eval begin
+        $s             (v::AbstractVector, x, o::Ordering) = $s(v, x, 1, length(v), o)
+        $s{O<:Ordering}(v::AbstractVector, x, ::Type{O})   = $s(v, x, O())
+        $s             (v::AbstractVector, x)              = $s(v, x, Forward())
+    end
+end
+
+## sorting algorithms ##
+
+abstract Algorithm
+
+type InsertionSort <: Algorithm end
+type QuickSort     <: Algorithm end
+type MergeSort     <: Algorithm end
+type TimSort       <: Algorithm end
+
+const DEFAULT_UNSTABLE = QuickSort()
+const DEFAULT_STABLE   = MergeSort()
+const SMALL_ALGORITHM  = InsertionSort()
+const SMALL_THRESHOLD  = 20
+
+sort!(v::AbstractVector, a::Algorithm, o::Ordering) = sort!(v, 1, length(v), a, o)
+sort (v::AbstractVector, a::Algorithm, o::Ordering) = sort!(copy(v), a, o)
+
+sort!{T<:Number}(v::AbstractVector{T}, o::Ordering) = sort!(v, DEFAULT_UNSTABLE, o)
+sort {T<:Number}(v::AbstractVector{T}, o::Ordering) = sort (v, DEFAULT_UNSTABLE, o)
+
+sort!(v::AbstractVector, o::Ordering) = sort!(v, DEFAULT_STABLE, o)
+sort (v::AbstractVector, o::Ordering) = sort (v, DEFAULT_STABLE, o)
+
+function sort!(v::AbstractVector, lo::Int, hi::Int, ::InsertionSort, o::Ordering)
+    for i = lo+1:hi
+        j = i
+        x = v[i]
+        while j > lo
+            if lt(o, x, v[j-1])
+                v[j] = v[j-1]
                 j -= 1
+                continue
             end
+            break
         end
-        if lo < j
-            $(expr(:call, quicksort, args..., :a, :lo, :j))
+        v[j] = x
+    end
+    return v
+end
+
+function sort!(v::AbstractVector, lo::Int, hi::Int, a::QuickSort, o::Ordering)
+    while lo < hi
+        hi-lo <= SMALL_THRESHOLD && return sort!(v, lo, hi, SMALL_ALGORITHM, o)
+        pivot = v[(lo+hi)>>>1]
+        i, j = lo, hi
+        while true
+            while lt(o, v[i], pivot); i += 1; end
+            while lt(o, pivot, v[j]); j -= 1; end
+            i <= j || break
+            v[i], v[j] = v[j], v[i]
+            i += 1; j -= 1
         end
+        lo < j && sort!(v, lo, j, a, o)
         lo = i
     end
-    return a
+    return v
 end
 
-# less fast & not in-place, but stable
-function ($mergesort)($(args...), a::AbstractVector, lo::Int, hi::Int, b::AbstractVector)
+function sort!(v::AbstractVector, lo::Int, hi::Int, a::MergeSort, o::Ordering, t::AbstractVector)
     if lo < hi
-        if hi-lo <= 20
-            return ($insertionsort)($(args...), a, lo, hi)
-        end
+        hi-lo <= SMALL_THRESHOLD && return sort!(v, lo, hi, SMALL_ALGORITHM, o)
 
         m = (lo+hi)>>>1
-        ($mergesort)($(args...), a, lo, m, b)
-        ($mergesort)($(args...), a, m+1, hi, b)
+        sort!(v, lo,  m,  a, o, t)
+        sort!(v, m+1, hi, a, o, t)
 
-        # merge(lo,m,hi)
-        i = 1
-        j = lo
+        i, j = 1, lo
         while j <= m
-            b[i] = a[j]
+            t[i] = v[j]
             i += 1
             j += 1
         end
 
-        i = 1
-        k = lo
+        i, k = 1, lo
         while k < j <= hi
-            if $(lt(:(a[j]), :(b[i])))
-                a[k] = a[j]
+            if lt(o, v[j], t[i])
+                v[k] = v[j]
                 j += 1
             else
-                a[k] = b[i]
+                v[k] = t[i]
                 i += 1
             end
             k += 1
         end
         while k < j
-            a[k] = b[i]
+            v[k] = t[i]
             k += 1
             i += 1
         end
     end
-    return a
+
+    return v
+end
+sort!(v::AbstractVector, lo::Int, hi::Int, a::MergeSort, o::Ordering) = sort!(v, lo, hi, a, o, similar(v))
+
+include("timsort.jl")
+
+## sortperm: the permutation to sort an array ##
+
+immutable Perm{O<:Ordering,V<:AbstractVector} <: Ordering
+    ord::O
+    vec::V
+end
+Perm{O<:Ordering,V<:AbstractVector}(o::O,v::V) = Perm{O,V}(o,v)
+
+lt(p::Perm, a, b) = lt(p.ord, p.vec[a], p.vec[b])
+
+sortperm(v::AbstractVector, a::Algorithm, o::Ordering) = sort!([1:length(v)], a, Perm(o,v))
+sortperm(v::AbstractVector, o::Ordering) = sortperm(v, DEFAULT_STABLE, o)
+
+##############
+
+# generic sorting methods
+
+for s in {:sort!, :sort, :sortperm}
+    @eval begin
+        # default to forward sort ordering
+        $s(v::AbstractVector, a::Algorithm) = $s(v, a, Forward())
+        $s(v::AbstractVector              ) = $s(v,    Forward())
+
+        # auto-instntiate algorithms and orderings from types
+        $s{A<:Algorithm,O<:Ordering}(v::AbstractVector, ::Type{A},    ::Type{O})   = $s(v, A(), O())
+        $s{A<:Algorithm            }(v::AbstractVector, ::Type{A},    o::Ordering) = $s(v, A(), o)
+        $s{             O<:Ordering}(v::AbstractVector, a::Algorithm, ::Type{O})   = $s(v, a,   O())
+        $s{A<:Algorithm            }(v::AbstractVector, ::Type{A})                 = $s(v, A())
+        $s{             O<:Ordering}(v::AbstractVector,               ::Type{O})   = $s(v,      O())
+
+        # also allow ordering before algorithm
+        $s                          (v::AbstractVector, o::Ordering, a::Algorithm) = $s(v, a, o)
+        $s{A<:Algorithm,O<:Ordering}(v::AbstractVector, ::Type{O},   ::Type{A})    = $s(v, A(), O())
+        $s{A<:Algorithm            }(v::AbstractVector, o::Ordering, ::Type{A})    = $s(v, A(), o)
+        $s{             O<:Ordering}(v::AbstractVector, ::Type{O},   a::Algorithm) = $s(v, a,   O())
+    end
 end
 
-# permutes auxilliary arrays mirroring the sort
-function ($mergesort)($(args...),
-                      a::AbstractVector, p::AbstractVector{Int}, lo::Int, hi::Int,
-                      b::AbstractVector, pb::AbstractVector{Int})
-    if lo < hi
-        if hi-lo <= 20
-            return ($insertionsort)($(args...), a, p, lo, hi)
-        end
-
-        m = (lo+hi)>>>1
-        ($mergesort)($(args...), a, p, lo, m, b, pb)
-        ($mergesort)($(args...), a, p, m+1, hi, b, pb)
-
-        # merge(lo,m,hi)
-        i = 1
-        j = lo
-        while j <= m
-            b[i] = a[j]
-            pb[i] = p[j]
-            i += 1
-            j += 1
-        end
-
-        i = 1
-        k = lo
-        while k < j <= hi
-            if $(lt(:(a[j]), :(b[i])))
-                a[k] = a[j]
-                p[k] = p[j]
-                j += 1
-            else
-                a[k] = b[i]
-                p[k] = pb[i]
-                i += 1
-            end
-            k += 1
-        end
-        while k < j
-            a[k] = b[i]
-            p[k] = pb[i]
-            k += 1
-            i += 1
-        end
+for s in {:sort!, :sort, :sortperm}
+    @eval begin
+        $s{A<:Algorithm}(v::AbstractVector, a::Union(A,Type{A}), lt::Function) = $s(v, a, Sort.Lt(lt))
+        $s{A<:Algorithm}(v::AbstractVector, lt::Function, a::Union(A,Type{A})) = $s(v, a, lt)
+        $s              (v::AbstractVector, lt::Function)                      = $s(v, Sort.Lt(lt))
+        $s              (lt::Function, v::AbstractVector, args...)             = $s(v, lt, args...)
     end
-    return a, p
 end
 
-end; end # quote / macro
-
-@_jl_sort_functions ""    :(isless($a,$b))
-@_jl_sort_functions "_r"  :(isless($b,$a))
-@_jl_sort_functions "_lt" :(lt($a,$b)) lt::Function
-@_jl_sort_functions "_by" :(isless(by($a),by($b))) by::Function
-
-## external sorting functions ##
-
-sort!{T<:Real}(a::AbstractVector{T})  = _jl_quicksort(a, 1, length(a))
-sortr!{T<:Real}(a::AbstractVector{T}) = _jl_quicksort_r(a, 1, length(a))
-sort!{T}(a::AbstractVector{T})  = _jl_mergesort(a, 1, length(a), Array(T,length(a)))
-sortr!{T}(a::AbstractVector{T}) = _jl_mergesort_r(a, 1, length(a), Array(T,length(a)))
-
-sort!{T}(lt::Function, a::AbstractVector{T}) =
-    _jl_mergesort_lt(lt, a, 1, length(a), Array(T,length(a)))
-sort_by!{T}(by::Function, a::AbstractVector{T}) =
-    _jl_mergesort_by(by, a, 1, length(a), Array(T,length(a)))
-
-## special sorting for floating-point arrays ##
-
-@_jl_sort_functions "_fp_pos" :(_jl_fp_pos_lt($a,$b))
-@_jl_sort_functions "_fp_neg" :(_jl_fp_neg_lt($a,$b))
-
-# push NaNs to the end of a, returning # of non-NaNs
-function _jl_nans_to_end{T<:FloatingPoint}(a::AbstractVector{T})
-    n = length(a)
-    if n <= 1
-        return n
+for (sb,s) in {(:sortby!, :sort!), (:sortby, :sort), (:sortpermby, :sortperm)}
+    @eval begin
+        $sb{A<:Algorithm}(v::AbstractVector, a::Union(A,Type{A}), by::Function) = $s(v, a, Sort.By(by))
+        $sb{A<:Algorithm}(v::AbstractVector, by::Function, a::Union(A,Type{A})) = $s(v, a, Sort.By(by))
+        $sb              (v::AbstractVector, by::Function)                      = $s(v, Sort.By(by))
+        $sb              (by::Function, v::AbstractVector, args...)             = $s(v, Sort.By(by), args...)
     end
-    i = 1
-    while (i < n) & (a[i]==a[i])
+end
+
+## fast clever sorting for floats ##
+
+module Float
+using Sort
+
+import Sort.sort!, Sort.Perm, Sort.lt, Sort.Reverse
+import Intrinsics.slt_int, Intrinsics.unbox
+
+typealias Floats Union(Float32,Float64)
+typealias Direct Union(Forward,Reverse)
+
+type Left <: Ordering end
+type Right <: Ordering end
+
+left(::Direct) = Left()
+right(::Direct) = Right()
+
+left{O<:Direct}(o::Perm{O}) = Perm(left(O()),o.vec)
+right{O<:Direct}(o::Perm{O}) = Perm(right(O()),o.vec)
+
+lt{T<:Floats}(::Left, x::T, y::T) = slt_int(unbox(T,y),unbox(T,x))
+lt{T<:Floats}(::Right, x::T, y::T) = slt_int(unbox(T,x),unbox(T,y))
+
+isnan(o::Direct, x::Floats) = (x!=x)
+isnan{O<:Direct}(o::Perm{O}, i::Int) = isnan(O(),o.vec[i])
+
+function nans2left!(v::AbstractVector, lo::Int, hi::Int, o::Ordering)
+    hi < lo && return lo, hi
+    i = lo
+    while (i < hi) & isnan(o, v[i])
         i += 1
     end
-    nnan = 0
+    r = 0
     while true
-        if a[i]==a[i]
+        if isnan(o, v[i])
             i += 1
         else
-            nnan += 1
+            r += 1
         end
-        if i+nnan > n
-            break
-        end
-        if nnan > 0
-            a[i], a[i+nnan] = a[i+nnan], a[i]
+        j = i + r
+        j > hi && break
+        if r > 0
+            v[i], v[j] = v[j], v[i]
         end
     end
-    return n-nnan
+    return i, hi
 end
-
-function sort!{T<:FloatingPoint}(a::AbstractVector{T})
-    n = _jl_nans_to_end(a)
-    i, j = 1, n
+function nans2right!(v::AbstractVector, lo::Int, hi::Int, o::Ordering)
+    hi < lo && return lo, hi
+    i = hi
+    while (i > lo) & isnan(o, v[i])
+        i -= 1
+    end
+    r = 0
     while true
-        # TODO: faster positive negative int check?
-        while i <= j && _jl_fp_pos_lt(a[i],zero(T)); i += 1; end
-        while i <= j && _jl_fp_pos_le(zero(T),a[j]); j -= 1; end
+        if isnan(o, v[i])
+            i -= 1
+        else
+            r += 1
+        end
+        j = i - r
+        j < lo && break
+        if r > 0
+            v[i], v[j] = v[j], v[i]
+        end
+    end
+    return lo, i
+end
+nans2left!(v::AbstractVector, o::Ordering) = nans2left!(v, 1, length(v), o)
+nans2right!(v::AbstractVector, o::Ordering) = nans2right!(v, 1, length(v), o)
+
+nans2end!(v::AbstractVector, o::Forward) = nans2right!(v, o)
+nans2end!(v::AbstractVector, o::Reverse) = nans2left!(v, o)
+nans2end!{O<:Forward}(v::AbstractVector{Int}, o::Perm{O}) = nans2right!(v, o)
+nans2end!{O<:Reverse}(v::AbstractVector{Int}, o::Perm{O}) = nans2left!(v, o)
+
+issignleft(o::Direct, x::Floats) = lt(o, x, zero(x))
+issignleft{O<:Direct}(o::Perm{O}, i::Int) = issignleft(O(), o.vec[i])
+
+function fpsort!(v::AbstractVector, a::Algorithm, o::Ordering)
+    i, j = lo, hi = nans2end!(v,o)
+    while true
+        while i <= j &&  issignleft(o, v[i]); i += 1; end
+        while i <= j && !issignleft(o, v[j]); j -= 1; end
         if i <= j
-            a[i], a[j] = a[j], a[i]
+            v[i], v[j] = v[j], v[i]
             i += 1
             j -= 1
         else
             break
         end
     end
-    _jl_quicksort_fp_neg(a, 1, j)
-    _jl_quicksort_fp_pos(a, i, n)
-    return a
+    sort!(v, lo, j,  a, left(o))
+    sort!(v, i,  hi, a, right(o))
+    return v
 end
+sort!{T<:Floats}(v::AbstractVector{T}, a::Algorithm, o::Direct) = fpsort!(v, a, o)
+sort!{O<:Direct,T<:Floats}(v::Vector{Int}, a::Algorithm, o::Perm{O,Vector{T}}) = fpsort!(v, a, o)
 
-# TODO: something sensible should happen when each_col et. al. are used with a
-# pure function argument
-function each_col!(f::Function, a::AbstractMatrix)
-    m = size(a,1)
-    for i = 1:m:numel(a)
-        f(sub(a, i:(i+m-1)))
-    end
-    return a
-end
+end # module Sort.Float
 
-function each_row!(f::Function, a::AbstractMatrix)
-    m = size(a,1)
-    for i = 1:m
-        f(sub(a, i:m:numel(a)))
-    end
-    return a
-end
-
-function each_vec!(f::Function, a::AbstractMatrix, dim::Integer)
-    if dim == 1; return each_col!(f,a); end
-    if dim == 2; return each_row!(f,a); end
-    error("invalid matrix dimensions: $dim")
-end
-
-each_col(f::Function, a::AbstractMatrix) = each_col!(f,copy(a))
-each_row(f::Function, a::AbstractMatrix) = each_row!(f,copy(a))
-each_vec(f::Function, a::AbstractMatrix, d::Integer) = each_vec!(f,copy(a),d)
-
-## other sorting functions defined in terms of sort! ##
-
-macro in_place_matrix_op(out_of_place, args...)
-    in_place = esc(symbol("$(out_of_place)!"))
-    out_of_place = esc(out_of_place)
-    quote
-        function ($in_place)($(args...), a::AbstractMatrix, dim::Int)
-            m = size(a,1)
-            if dim == 1
-                for i = 1:m:numel(a)
-                    ($in_place)($(args...), sub(a, i:(i+m-1)))
-                end
-            elseif dim == 2
-                for i = 1:m
-                    ($in_place)($(args...), sub(a, i:m:numel(a)))
-                end
-            end
-            return a
-        end
-        # TODO: in-place generalized AbstractArray implementation
-        ($in_place)($(args...), a::AbstractArray) = ($in_place)($(args...), a,1)
-
-        ($out_of_place)($(args...), a::AbstractVector) = ($in_place)($(args...), copy(a))
-        ($out_of_place)($(args...), a::AbstractArray, d::Int) = ($in_place)($(args...), copy(a), d)
-        ($out_of_place)($(args...), a::AbstractArray) = ($out_of_place)($(args...), a,1)
-    end
-end
-
-@in_place_matrix_op sort
-@in_place_matrix_op sort lt::Function
-@in_place_matrix_op sortr
-@in_place_matrix_op sort_by by::Function
-
-# TODO: implement generalized in-place, ditch this
-function sort(a::AbstractArray, dim::Int)
-    X = similar(a)
-    n = size(a,dim)
-    if dim == 1
-        for i = 1:n:numel(a)
-            this_slice = i:(i+n-1)
-            X[this_slice] = sort(sub(a, this_slice))
-        end
-    else
-        p = [1:ndims(a)]
-        p[dim], p[1] = p[1], p[dim]
-        X = ipermute(sort(permute(a, p)), p)
-    end
-    return X
-end
-
-sortperm{T}(a::AbstractVector{T}) =
-    _jl_mergesort(copy(a), [1:length(a)], 1, length(a),
-                  Array(T, length(a)), Array(Int, length(a)))
-
-function issorted(v::AbstractVector)
-  for i = 1:length(v)-1
-      if isless(v[i+1], v[i])
-          return false
-      end
-  end
-  return true
-end
-
-function _jl_quickselect(a::AbstractArray, k::Int, lo::Int, hi::Int)
-    if k < lo || k > hi; error("k is out of bounds"); end
-
-    while true
-
-        if lo == hi; return a[lo]; end
-
-        i, j = lo, hi
-        pivot = _jl_pivot_middle(a[lo], a[hi], a[(lo+hi)>>>1])
-        while i < j
-            while isless(a[i], pivot); i += 1; end
-            while isless(pivot, a[j]); j -= 1; end
-            if isequal(a[i], a[j])
-                i += 1
-            elseif i < j
-                a[i], a[j] = a[j], a[i]
-            end
-        end
-        pivot_ind = j
-
-        length = pivot_ind - lo + 1
-        if k == length
-            return a[pivot_ind]
-        elseif k <  length
-            hi = pivot_ind - 1
-        else
-            lo = pivot_ind + 1
-            k = k - length
-        end
-
-    end # while true...
-
-end
-
-select(a::AbstractArray, k::Int) = _jl_quickselect(copy(a), k, 1, length(a))
-select!(a::AbstractArray, k::Int) = _jl_quickselect(a, k, 1, length(a))
-
-search_sorted(a::Vector, x) = search_sorted(a, x, 1, length(a))
-
-function search_sorted(a::Vector, x, lo::Int, hi::Int)
-    if isless(a[hi], x)
-        return hi+1
-    end
-    while lo < hi-1
-        i = (lo+hi)>>>1
-        if isless(x,a[i])
-            hi = i
-        else
-            lo = i
-        end
-    end
-    return isless(a[lo],x) ? hi : lo
-end
-
-search_sorted_last(a::Vector, x) = search_sorted_last(a, x, 0, length(a)+1)
-
-function search_sorted_last(a::Vector, x, lo::Int, hi::Int)
-    ## Index of the last value of vector a that is less than or equal to x.
-    ## Returns 0 if x is less than all values of a.
-    ## 
-    ## Good reference: http://www.tbray.org/ongoing/When/200x/2003/03/22/Binary 
-    while lo < hi-1
-        i = (lo+hi)>>>1
-        if isless(x,a[i])
-            hi = i
-        else
-            lo = i
-        end
-    end
-    lo
-end
-
-search_sorted_first(a::Vector, x) = search_sorted_first(a, x, 0, length(a)+1)
-
-function search_sorted_first(a::Vector, x, lo::Int, hi::Int)
-    ## Index of the first value of vector a that is greater than or equal to x.
-    ## Returns length(a) + 1 if x is greater than all values in a.
-    ## 
-    ## Good reference: http://www.tbray.org/ongoing/When/200x/2003/03/22/Binary 
-    while lo < hi-1
-        i = (lo+hi)>>>1
-        if isless(a[i],x)
-            lo = i
-        else
-            hi = i
-        end
-    end
-    hi
-end
-
-order(a::AbstractVector) = sortperm(a)[2]
+end # module Sort

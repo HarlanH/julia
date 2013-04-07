@@ -2,18 +2,26 @@ JULIAHOME = ../..
 include $(JULIAHOME)/Make.inc
 include $(JULIAHOME)/deps/Versions.make
 
+ifeq ($(OS), WINNT)
+MATHEMATICABIN = MathKernel
+else ifeq ($(OS), Darwin)
+MATHEMATICABIN = MathKernel
+else
+MATHEMATICABIN = math
+endif
+
 default: benchmarks.html
 
 export OMP_NUM_THREADS=1
 export GOTO_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-perf.h:
+perf.h: $(JULIAHOME)/deps/Versions.make
 	echo '#include "$(JULIAHOME)/deps/openblas-$(OPENBLAS_VER)/cblas.h"' > $@
 	echo '#include "$(JULIAHOME)/deps/random/dsfmt-$(DSFMT_VER)/dSFMT.c"' >> $@
 
-bin/perf%: perf.cpp perf.h
-	$(CXX) -O$* $< -o $@ $(JULIAHOME)/deps/openblas-$(OPENBLAS_VER)/libopenblas.a -lpthread
+bin/perf%: perf.c perf.h
+	$(CC) -std=c99 -O$* $< -o $@ $(JULIAHOME)/deps/openblas-$(OPENBLAS_VER)/libopenblas.a -lpthread
 
 bin/fperf%: perf.f90
 	$(FC) -static-libgfortran -O$* -fexternal-blas $< -o $@ $(JULIAHOME)/deps/openblas-$(OPENBLAS_VER)/libopenblas.a -lpthread
@@ -38,6 +46,9 @@ benchmarks/c%.csv: bin/perf%
 benchmarks/fortran%.csv: bin/fperf%
 	for t in 1 2 3 4 5; do $<; done >$@
 
+benchmarks/go.csv: perf.go
+	for t in 1 2 3 4 5; do go run $<; done >$@
+
 benchmarks/julia.csv: perf.jl
 	for t in 1 2 3 4 5; do ../../julia $<; done >$@
 
@@ -56,15 +67,20 @@ benchmarks/r.csv: perf.R
 benchmarks/javascript.csv: perf.js
 	for t in 1 2 3 4 5; do node $<; done >$@
 
+benchmarks/mathematica.csv: perf.nb
+	for t in 1 2 3 4 5; do $(MATHEMATICABIN) -noprompt -run "<<$<; Exit[]"; done >$@
+
 BENCHMARKS = \
 	benchmarks/c.csv \
 	benchmarks/fortran.csv \
+	benchmarks/go.csv \
 	benchmarks/julia.csv \
 	benchmarks/python.csv \
 	benchmarks/matlab.csv \
 	benchmarks/octave.csv \
 	benchmarks/r.csv \
-	benchmarks/javascript.csv
+	benchmarks/javascript.csv \
+	benchmarks/mathematica.csv
 
 benchmarks.csv: bin/collect.pl $(BENCHMARKS)
 	$(QUIET_PERL) $^ >$@
@@ -73,6 +89,6 @@ benchmarks.html: bin/table.pl benchmarks.csv
 	$(QUIET_PERL) $^ >$@
 
 clean:
-	@rm -rf bin/perf* bin/fperf* benchmarks/*.csv benchmarks.csv *.mod
+	@rm -rf perf.h bin/perf* bin/fperf* benchmarks/*.csv benchmarks.csv *.mod
 
 .PHONY: all perf clean
